@@ -1,0 +1,8 @@
+__pycache__ 
+*.pyc 
+venv/ 
+.env 
+smart_digest.db 
+node_modules/ 
+dist/ 
+key.txt 
