@@ -5,8 +5,9 @@ import api from "./axiosInstance";
  * @param {number} digestId
  * @returns {Promise<Array<{ id: number, selected_text: string, comment: string }>>}
  */
-export async function fetchAnnotations(digestId) {
-  const { data } = await api.get(`/api/annotation/${digestId}`);
+export async function fetchAnnotations(digestId, page = null) {
+  const params = page != null ? { page } : undefined;
+  const { data } = await api.get(`/api/annotation/${digestId}`, { params });
   return data;
 }
 
@@ -17,11 +18,33 @@ export async function fetchAnnotations(digestId) {
  * @param {string} comment
  * @returns {Promise<{ status: string, annotations: Array }>}
  */
-export async function saveAnnotation(digestId, selectedText, comment) {
+export async function saveAnnotation(digestId, selectedText, comment, pageNumber = 1) {
   const { data } = await api.post("/api/annotation/save", {
     digest_id: digestId,
     selected_text: selectedText,
     comment,
+    page_number: pageNumber,
   });
+  return data;
+}
+
+/**
+ * 주석 내용을 수정합니다.
+ * @param {number} annotationId
+ * @param {string} comment
+ * @returns {Promise<{ status: string, annotations: Array }>}
+ */
+export async function updateAnnotation(annotationId, comment) {
+  const { data } = await api.put(`/api/annotation/${annotationId}`, { comment });
+  return data;
+}
+
+/**
+ * 주석을 삭제합니다.
+ * @param {number} annotationId
+ * @returns {Promise<{ status: string, annotations: Array }>}
+ */
+export async function deleteAnnotation(annotationId) {
+  const { data } = await api.delete(`/api/annotation/${annotationId}`);
   return data;
 }

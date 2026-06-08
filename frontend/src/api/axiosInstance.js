@@ -43,7 +43,10 @@ api.interceptors.response.use(
     const message = Array.isArray(detail)
       ? detail.map((item) => item.msg || item).join(", ")
       : detail || data?.message || error.message || "요청에 실패했습니다.";
-    return Promise.reject(new Error(message));
+    const wrapped = new Error(message);
+    wrapped.status = error.response?.status;
+    wrapped.isRateLimit = wrapped.status === 429 || /429|rate limit|resource.exhausted|quota|한도/i.test(message);
+    return Promise.reject(wrapped);
   }
 );
 

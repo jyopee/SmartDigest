@@ -7,7 +7,11 @@ from typing import Any, Optional
 
 import database as db
 from document_extractor import extract_text_from_upload
+from gemini_client import format_gemini_error, is_rate_limit_error
+from usage_tracker import sync_usage_to_limit
+from summary_cards import build_smart_layout
 from summary_engine import map_reduce_summarize
+from usage_tracker import reset_usage_user, set_usage_user
 
 _jobs: dict[str, dict[str, Any]] = {}
 
@@ -59,6 +63,7 @@ async def run_summary_job(
     filename: str,
     raw: bytes,
 ) -> None:
+    usage_token = set_usage_user(user_id)
     try:
         update_job(
             job_id,
@@ -72,13 +77,18 @@ async def run_summary_job(
             _complete_with_existing_digest(job_id, existing)
             return
 
+        is_pptx = filename.lower().endswith(".pptx")
         update_job(
             job_id,
             progress=2,
-            message="파일에서 텍스트를 추출하는 중...",
+            message=(
+                "PPTX 분석 중... 이미지 슬라이드는 OCR로 텍스트를 읽습니다."
+                if is_pptx
+                else "파일에서 텍스트를 추출하는 중..."
+            ),
         )
 
-        _text, source_chunks = extract_text_from_upload(filename, raw)
+        _text, source_chunks = extract_text_from_upload(filename, raw, user_id=user_id)
         if not source_chunks:
             raise ValueError("추출된 텍스트가 없습니다.")
 
@@ -88,12 +98,22 @@ async def run_summary_job(
                 fields["progress"] = progress
             update_job(job_id, **fields)
 
-        result = await map_reduce_summarize(source_chunks, on_progress=on_progress)
+        result = await map_reduce_summarize(
+            source_chunks,
+            on_progress=on_progress,
+            user_id=user_id,
+        )
 
         update_job(job_id, progress=95, message="요약 결과를 저장하는 중...")
-        db.save_digest(user_id, filename, result["summary"])
-        digests = db.get_my_digests(user_id)
-        digest_id = digests[0][0] if digests else None
+        pages = result["partial_summaries"] or [result["summary"]]
+        default_layout = build_smart_layout(result.get("cards") or [])
+        digest_id = db.save_digest_with_pages_and_layout(
+            user_id,
+            filename,
+            result["summary"],
+            pages,
+            default_layout,
+        )
 
         update_job(
             job_id,
@@ -105,9 +125,13 @@ async def run_summary_job(
             summary=result["summary"],
         )
     except Exception as exc:
+        if is_rate_limit_error(exc):
+            sync_usage_to_limit(user_id)
         update_job(
             job_id,
             status="error",
             message="분석 중 오류가 발생했습니다.",
-            error=str(exc),
+            error=format_gemini_error(exc),
         )
+    finally:
+        reset_usage_user(usage_token)

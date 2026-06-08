@@ -1,6 +1,6 @@
 import json
 import asyncio
-from typing import Optional
+from typing import Literal, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -10,14 +10,30 @@ from sse_starlette.sse import EventSourceResponse
 
 import database as db
 import summary_service as summary_jobs
+from chat_engine import ask_question
 from document_extractor import extract_text_from_upload
+from gemini_client import close_client, format_gemini_error
+from summary_cards import (
+    add_card_from_source,
+    build_smart_layout,
+    build_storage_payload,
+    parse_digest_content,
+)
 from summary_engine import map_reduce_summarize
+from usage_tracker import (
+    get_daily_usage,
+    is_quota_exhausted,
+    reset_usage_user,
+    set_usage_user,
+    sync_usage_to_limit,
+)
 
 # --- Lifespan for Startup/Shutdown ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
     yield
+    close_client()
 
 app = FastAPI(title="SmartDigest API", version="1.0.0", lifespan=lifespan)
 
@@ -49,6 +65,39 @@ class AnnotationRequest(BaseModel):
     digest_id: int
     selected_text: str
     comment: str
+    page_number: int = Field(default=1, ge=1)
+
+class AnnotationUpdateRequest(BaseModel):
+    comment: str
+
+class NoteRequest(BaseModel):
+    digest_id: int
+    selected_text: str = ""
+    content: str
+    page_number: int = Field(default=1, ge=1)
+
+class NoteUpdateRequest(BaseModel):
+    content: str
+
+class ChatAskRequest(BaseModel):
+    digest_id: int
+    question: str
+    selected_text: str = ""
+    page_number: int = Field(default=1, ge=1)
+
+class PageSaveRequest(BaseModel):
+    content: str
+
+class GridLayoutSaveRequest(BaseModel):
+    layout: list[dict]
+
+class LayoutSnapshotCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    layout: list[dict]
+
+class GridCardFromSourceRequest(BaseModel):
+    source: Literal["note", "chat"]
+    source_id: int = Field(ge=1)
 
 # --- Routes ---
 
@@ -96,12 +145,29 @@ async def delete_digest(digest_id: int, user_id: str = Query(...)):
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
     return {"status": "success"}
 
+QUOTA_EXCEEDED_MESSAGE = "오늘의 학습 한도를 모두 사용했습니다."
+
+
+@app.get("/api/usage/today")
+async def get_usage_today(user_id: str = Query(...)):
+    return get_daily_usage(user_id)
+
+
+@app.post("/api/usage/mark-exhausted")
+async def mark_usage_exhausted(user_id: str = Query(...)):
+    """Sync DB usage to daily limit after a 429 / rate-limit response."""
+    return sync_usage_to_limit(user_id)
+
+
 @app.post("/api/summary/start")
 async def start_summary(
     background_tasks: BackgroundTasks,
     user_id: str = Form(...),
     file: UploadFile = File(...),
 ):
+    if is_quota_exhausted(user_id):
+        raise HTTPException(status_code=429, detail=QUOTA_EXCEEDED_MESSAGE)
+
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
@@ -174,6 +240,9 @@ async def stream_summary(job_id: str):
 
 @app.post("/api/digest/upload")
 async def upload_document(user_id: str = Form(...), file: UploadFile = File(...)):
+    if is_quota_exhausted(user_id):
+        raise HTTPException(status_code=429, detail=QUOTA_EXCEEDED_MESSAGE)
+
     existing = db.get_digest_by_filename(user_id, file.filename)
     if existing:
         return {
@@ -188,27 +257,380 @@ async def upload_document(user_id: str = Form(...), file: UploadFile = File(...)
     if not raw:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
 
-    _text, source_chunks = extract_text_from_upload(file.filename, raw)
+    _text, source_chunks = extract_text_from_upload(file.filename, raw, user_id=user_id)
     if not source_chunks:
         raise HTTPException(status_code=400, detail="추출된 텍스트가 없습니다.")
 
-    result = await map_reduce_summarize(source_chunks)
-    db.save_digest(user_id, file.filename, result["summary"])
-    digests = db.get_my_digests(user_id)
+    usage_token = set_usage_user(user_id)
+    try:
+        result = await map_reduce_summarize(source_chunks, user_id=user_id)
+    finally:
+        reset_usage_user(usage_token)
+    pages = result["partial_summaries"] or [result["summary"]]
+    default_layout = build_smart_layout(result.get("cards") or [])
+    digest_id = db.save_digest_with_pages_and_layout(
+        user_id,
+        file.filename,
+        result["summary"],
+        pages,
+        default_layout,
+    )
     return {
         "status": "success",
-        "digest_id": digests[0][0] if digests else None,
+        "digest_id": digest_id,
         **result,
     }
 
+
+@app.get("/api/digests/{digest_id}/grid")
+async def get_digest_grid(digest_id: int, user_id: str = Query(...)):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    parsed = parse_digest_content(digest["content"])
+    cards = parsed["cards"]
+    layout = db.get_digest_grid_layout(digest_id)
+    if not layout:
+        layout = build_smart_layout(cards)
+        if layout:
+            db.save_digest_grid_layout(digest_id, layout)
+
+    return {
+        "digest_id": digest_id,
+        "version": parsed["version"],
+        "cards": cards,
+        "layout": layout,
+    }
+
+
+@app.put("/api/digests/{digest_id}/grid/layout")
+async def save_digest_grid_layout(
+    digest_id: int,
+    body: GridLayoutSaveRequest,
+    user_id: str = Query(...),
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if not body.layout:
+        raise HTTPException(status_code=400, detail="레이아웃이 비어 있습니다.")
+
+    db.save_digest_grid_layout(digest_id, body.layout)
+    return {"status": "success", "digest_id": digest_id, "layout": body.layout}
+
+
+@app.get("/api/digests/{digest_id}/grid/snapshots")
+async def list_digest_layout_snapshots(
+    digest_id: int, user_id: str = Query(...)
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    return {
+        "digest_id": digest_id,
+        "snapshots": db.list_layout_snapshots(digest_id),
+    }
+
+
+@app.post("/api/digests/{digest_id}/grid/snapshots")
+async def create_digest_layout_snapshot(
+    digest_id: int,
+    body: LayoutSnapshotCreateRequest,
+    user_id: str = Query(...),
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if not body.layout:
+        raise HTTPException(status_code=400, detail="레이아웃이 비어 있습니다.")
+
+    snapshot = db.create_layout_snapshot(digest_id, body.name.strip(), body.layout)
+    return {"status": "success", "snapshot": snapshot}
+
+
+@app.post("/api/digests/{digest_id}/grid/snapshots/{snapshot_id}/restore")
+async def restore_digest_layout_snapshot(
+    digest_id: int,
+    snapshot_id: int,
+    user_id: str = Query(...),
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    layout = db.restore_layout_snapshot(digest_id, snapshot_id)
+    if layout is None:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+
+    return {
+        "status": "success",
+        "digest_id": digest_id,
+        "snapshot_id": snapshot_id,
+        "layout": layout,
+    }
+
+
+@app.post("/api/digests/{digest_id}/grid/cards/from-source")
+async def add_digest_grid_card_from_source(
+    digest_id: int,
+    body: GridCardFromSourceRequest,
+    user_id: str = Query(...),
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if body.source == "note":
+        payload = db.get_note_by_id(body.source_id)
+        if not payload or payload["digest_id"] != digest_id:
+            raise HTTPException(status_code=404, detail="주석을 찾을 수 없습니다.")
+    else:
+        payload = db.get_chat_by_id(body.source_id)
+        if not payload or payload["digest_id"] != digest_id:
+            raise HTTPException(status_code=404, detail="질문 기록을 찾을 수 없습니다.")
+
+    parsed = parse_digest_content(digest["content"])
+    layout = db.get_digest_grid_layout(digest_id) or []
+    try:
+        card, next_layout, next_cards, already_exists = add_card_from_source(
+            parsed["cards"],
+            layout,
+            body.source,
+            payload,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not already_exists:
+        db.update_digest_content(digest_id, build_storage_payload(next_cards))
+        db.save_digest_grid_layout(digest_id, next_layout)
+
+    return {
+        "status": "success",
+        "digest_id": digest_id,
+        "card": card,
+        "layout": next_layout,
+        "already_exists": already_exists,
+    }
+
+
+@app.delete("/api/digests/{digest_id}/grid/snapshots/{snapshot_id}")
+async def delete_digest_layout_snapshot(
+    digest_id: int,
+    snapshot_id: int,
+    user_id: str = Query(...),
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if not db.delete_layout_snapshot(digest_id, snapshot_id):
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+
+    return {"status": "success", "snapshot_id": snapshot_id}
+
+
+@app.get("/api/digests/{digest_id}/pages")
+async def get_digest_pages(digest_id: int, page: Optional[int] = Query(None, ge=1)):
+    digest_exists = db.get_digest_content_by_id(digest_id)
+    if digest_exists is None:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if page is None:
+        return db.get_digest_pages_meta(digest_id)
+
+    page_data = db.get_digest_page(digest_id, page)
+    if not page_data:
+        raise HTTPException(status_code=404, detail="페이지를 찾을 수 없습니다.")
+
+    meta = db.get_digest_pages_meta(digest_id)
+    return {
+        **page_data,
+        "total_pages": meta["total_pages"],
+        "digest_id": digest_id,
+    }
+
+
+@app.put("/api/digests/{digest_id}/pages")
+async def save_digest_page(
+    digest_id: int,
+    body: PageSaveRequest,
+    page: int = Query(..., ge=1),
+):
+    if db.get_digest_content_by_id(digest_id) is None:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="페이지 내용이 비어 있습니다.")
+
+    if not db.update_digest_page(digest_id, page, content):
+        raise HTTPException(status_code=404, detail="페이지를 찾을 수 없습니다.")
+
+    meta = db.get_digest_pages_meta(digest_id)
+    return {
+        "status": "success",
+        "digest_id": digest_id,
+        "page_number": page,
+        "content": content,
+        "total_pages": meta["total_pages"],
+    }
+
+
+@app.get("/api/digests/{digest_id}/pages/export")
+async def export_digest_page(digest_id: int, page: int = Query(..., ge=1)):
+    page_data = db.get_digest_page(digest_id, page)
+    if not page_data:
+        raise HTTPException(status_code=404, detail="페이지를 찾을 수 없습니다.")
+
+    digest = db.get_digest_by_id_for_export(digest_id)
+    filename = digest["filename"] if digest else f"digest_{digest_id}"
+    stem = filename.rsplit(".", 1)[0]
+    return {
+        "filename": f"{stem}_page{page}.md",
+        "content": page_data["content"],
+        "page_number": page,
+        "digest_id": digest_id,
+    }
+
+
 @app.post("/api/annotation/save")
 async def save_annotation(body: AnnotationRequest):
-    db.save_selection_comment(body.digest_id, body.selected_text.strip(), body.comment.strip())
-    return {"status": "success", "annotations": db.get_selection_comments(body.digest_id)}
+    db.ensure_digest_pages(body.digest_id)
+    db.save_note(
+        body.digest_id,
+        body.selected_text.strip(),
+        body.comment.strip(),
+        body.page_number,
+    )
+    notes = db.get_notes(body.digest_id)
+    return {"status": "success", "annotations": _notes_as_annotations(notes), "notes": notes}
 
 @app.get("/api/annotation/{digest_id}")
-async def get_annotations(digest_id: int):
-    return db.get_selection_comments(digest_id)
+async def get_annotations(digest_id: int, page: Optional[int] = Query(None, ge=1)):
+    notes = db.get_notes(digest_id, page_number=page)
+    return _notes_as_annotations(notes)
+
+@app.put("/api/annotation/{annotation_id}")
+async def update_annotation(annotation_id: int, body: AnnotationUpdateRequest):
+    comment = body.comment.strip()
+    if not comment:
+        raise HTTPException(status_code=400, detail="주석 내용을 입력하세요.")
+    digest_id = db.update_note_by_id(annotation_id, comment)
+    if digest_id is None:
+        raise HTTPException(status_code=404, detail="주석을 찾을 수 없습니다.")
+    notes = db.get_notes(digest_id)
+    return {"status": "success", "annotations": _notes_as_annotations(notes), "notes": notes}
+
+@app.delete("/api/annotation/{annotation_id}")
+async def delete_annotation(annotation_id: int):
+    digest_id = db.delete_note_by_id(annotation_id)
+    if digest_id is None:
+        raise HTTPException(status_code=404, detail="주석을 찾을 수 없습니다.")
+    notes = db.get_notes(digest_id)
+    return {"status": "success", "annotations": _notes_as_annotations(notes), "notes": notes}
+
+
+def _notes_as_annotations(notes: list[dict]) -> list[dict]:
+    return [
+        {
+            "id": note["id"],
+            "selected_text": note["selected_text"],
+            "comment": note["content"],
+            "page_number": note["page_number"],
+        }
+        for note in notes
+    ]
+
+
+@app.post("/api/notes/save")
+async def save_note(body: NoteRequest):
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="주석 내용을 입력하세요.")
+    db.ensure_digest_pages(body.digest_id)
+    db.save_note(
+        body.digest_id,
+        body.selected_text.strip(),
+        content,
+        body.page_number,
+    )
+    return {"status": "success", "notes": db.get_notes(body.digest_id)}
+
+
+@app.get("/api/notes/{digest_id}")
+async def get_notes(digest_id: int, page: Optional[int] = Query(None, ge=1)):
+    return db.get_notes(digest_id, page_number=page)
+
+
+@app.put("/api/notes/{note_id}")
+async def update_note(note_id: int, body: NoteUpdateRequest):
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="주석 내용을 입력하세요.")
+    digest_id = db.update_note_by_id(note_id, content)
+    if digest_id is None:
+        raise HTTPException(status_code=404, detail="주석을 찾을 수 없습니다.")
+    return {"status": "success", "notes": db.get_notes(digest_id)}
+
+
+@app.delete("/api/notes/{note_id}")
+async def delete_note(note_id: int):
+    digest_id = db.delete_note_by_id(note_id)
+    if digest_id is None:
+        raise HTTPException(status_code=404, detail="주석을 찾을 수 없습니다.")
+    return {"status": "success", "notes": db.get_notes(digest_id)}
+
+
+@app.post("/api/chat/ask")
+async def chat_ask(body: ChatAskRequest):
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="질문을 입력하세요.")
+
+    if db.get_digest_content_by_id(body.digest_id) is None:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    db.ensure_digest_pages(body.digest_id)
+    page_data = db.get_digest_page(body.digest_id, body.page_number)
+    page_content = page_data["content"] if page_data else ""
+
+    try:
+        answer = await ask_question(
+            question,
+            selected_text=body.selected_text.strip(),
+            page_content=page_content,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=format_gemini_error(exc)) from exc
+
+    chat_id = db.save_chat_exchange(
+        body.digest_id,
+        question,
+        answer,
+        selected_text=body.selected_text.strip(),
+        page_number=body.page_number,
+    )
+    chats = db.get_chat_history(body.digest_id)
+    created = next((c for c in chats if c["id"] == chat_id), None)
+    return {"status": "success", "chat": created, "chats": chats}
+
+
+@app.get("/api/chat/{digest_id}")
+async def get_chats(digest_id: int, page: Optional[int] = Query(None, ge=1)):
+    return db.get_chat_history(digest_id, page_number=page)
+
+
+@app.delete("/api/chat/{chat_id}")
+async def delete_chat(chat_id: int):
+    digest_id = db.delete_chat_by_id(chat_id)
+    if digest_id is None:
+        raise HTTPException(status_code=404, detail="질문 기록을 찾을 수 없습니다.")
+    return {"status": "success", "chats": db.get_chat_history(digest_id)}
 
 if __name__ == "__main__":
     import uvicorn

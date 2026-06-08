@@ -1,8 +1,10 @@
 fastapi
 uvicorn[standard]
+python-dotenv
 python-multipart
 google-genai
 pymupdf
 python-docx
+python-pptx
 sse-starlette
 tenacity

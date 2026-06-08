@@ -39,40 +39,50 @@ export default function DigestList({
 
   return (
     <ul className="digest-list">
-      {digests.map((digest) => (
-        <li key={digest.id} className={selectedId === digest.id ? "active" : ""}>
-          {editingId === digest.id ? (
-            <div className="rename-row">
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submitRename(digest)}
-              />
-              <button type="button" onClick={() => submitRename(digest)}>
-                저장
-              </button>
-            </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="digest-title"
-                onClick={() => onSelect(digest.id)}
-              >
-                {digest.filename}
-              </button>
-              <div className="digest-actions">
-                <button type="button" onClick={() => startRename(digest)}>
-                  이름
-                </button>
-                <button type="button" onClick={() => handleDelete(digest)}>
-                  삭제
+      {digests.map((digest) => {
+        const isActive = selectedId === digest.id;
+        const isEditing = editingId === digest.id;
+
+        return (
+          <li
+            key={digest.id}
+            className={isActive ? "active" : ""}
+            title={digest.filename}
+          >
+            {isEditing ? (
+              <div className="rename-row">
+                <input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submitRename(digest)}
+                  autoFocus
+                />
+                <button type="button" onClick={() => submitRename(digest)}>
+                  저장
                 </button>
               </div>
-            </>
-          )}
-        </li>
-      ))}
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="digest-title"
+                  onClick={() => onSelect(digest.id)}
+                >
+                  {digest.filename}
+                </button>
+                <div className="digest-actions">
+                  <button type="button" onClick={() => startRename(digest)}>
+                    이름
+                  </button>
+                  <button type="button" onClick={() => handleDelete(digest)}>
+                    삭제
+                  </button>
+                </div>
+              </>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
