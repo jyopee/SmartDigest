@@ -2,6 +2,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 DB_PATH = Path(__file__).resolve().parent / "smart_digest.db"
 
@@ -89,6 +90,22 @@ def init_db():
         c.execute("ALTER TABLE annotations ADD COLUMN selected_text TEXT")
     if "page_number" not in columns:
         c.execute("ALTER TABLE annotations ADD COLUMN page_number INTEGER DEFAULT 1")
+    c.execute("PRAGMA table_info(digest_pages)")
+    page_columns = [row[1] for row in c.fetchall()]
+    if "split_points_json" not in page_columns:
+        c.execute("ALTER TABLE digest_pages ADD COLUMN split_points_json TEXT")
+    c.execute("PRAGMA table_info(chat_history)")
+    chat_columns = [row[1] for row in c.fetchall()]
+    if "sources_json" not in chat_columns:
+        c.execute("ALTER TABLE chat_history ADD COLUMN sources_json TEXT")
+    if "is_verified" not in chat_columns:
+        c.execute("ALTER TABLE chat_history ADD COLUMN is_verified INTEGER DEFAULT 0")
+    c.execute("PRAGMA table_info(layout_snapshots)")
+    snapshot_columns = [row[1] for row in c.fetchall()]
+    if "is_original" not in snapshot_columns:
+        c.execute(
+            "ALTER TABLE layout_snapshots ADD COLUMN is_original INTEGER DEFAULT 0"
+        )
     conn.commit()
     conn.close()
     _migrate_legacy_annotations_to_notes()
@@ -151,20 +168,71 @@ def save_digest_with_pages(userid, filename, content, pages: list[str]):
     return digest_id
 
 
+ORIGINAL_SNAPSHOT_NAME = "원본"
+
+
 def save_digest_with_pages_and_layout(
     userid: str,
     filename: str,
     content: str,
     pages: list[str],
     layout: list[dict] | None = None,
+    cards: list | None = None,
 ) -> int:
     digest_id = save_digest_with_pages(userid, filename, content, pages)
     if layout:
         save_digest_grid_layout(digest_id, layout)
+        ensure_original_layout_snapshot(digest_id, layout, cards=cards)
     return digest_id
 
 
-def get_digest_grid_layout(digest_id: int) -> list[dict] | None:
+def _parse_layout_json(raw: str | None) -> Any | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, (list, dict)):
+        return parsed
+    return None
+
+
+def _pack_snapshot_payload(layout: Any, cards: list | None = None) -> dict:
+    payload: dict[str, Any] = {"layout": layout}
+    if cards is not None:
+        payload["cards"] = cards
+    return payload
+
+
+def _snapshot_counts(raw: Any) -> tuple[int, int]:
+    layout, cards = _unpack_snapshot_payload(raw)
+    if isinstance(cards, list):
+        card_count = len(cards)
+    else:
+        card_count = 0
+    if isinstance(layout, dict):
+        node_count = len(layout.get("nodes") or [])
+    elif isinstance(layout, list):
+        node_count = len(layout)
+    else:
+        node_count = 0
+    if not card_count and node_count:
+        card_count = node_count
+    return card_count, node_count
+
+
+def _unpack_snapshot_payload(raw: Any) -> tuple[Any, list | None]:
+    if isinstance(raw, dict) and "layout" in raw:
+        layout = raw.get("layout")
+        cards = raw.get("cards")
+        if isinstance(cards, list):
+            return layout, cards
+        return layout, None
+    return raw, None
+
+
+def get_digest_grid_layout(digest_id: int) -> Any | None:
     conn = _connect()
     c = conn.cursor()
     c.execute(
@@ -175,14 +243,10 @@ def get_digest_grid_layout(digest_id: int) -> list[dict] | None:
     conn.close()
     if not row:
         return None
-    try:
-        parsed = json.loads(row[0])
-        return parsed if isinstance(parsed, list) else None
-    except json.JSONDecodeError:
-        return None
+    return _parse_layout_json(row[0])
 
 
-def save_digest_grid_layout(digest_id: int, layout: list[dict]) -> None:
+def save_digest_grid_layout(digest_id: int, layout: Any) -> None:
     conn = _connect()
     c = conn.cursor()
     c.execute(
@@ -197,22 +261,78 @@ def save_digest_grid_layout(digest_id: int, layout: list[dict]) -> None:
     conn.close()
 
 
-def list_layout_snapshots(digest_id: int) -> list[dict]:
+def has_original_layout_snapshot(digest_id: int) -> bool:
     conn = _connect()
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, name, created_at
+        SELECT 1
         FROM layout_snapshots
-        WHERE digest_id = ?
-        ORDER BY id DESC
+        WHERE digest_id = ? AND COALESCE(is_original, 0) = 1
+        LIMIT 1
         """,
         (digest_id,),
     )
-    rows = [
-        {"id": row[0], "name": row[1], "created_at": row[2]}
-        for row in c.fetchall()
-    ]
+    exists = c.fetchone() is not None
+    conn.close()
+    return exists
+
+
+def ensure_original_layout_snapshot(
+    digest_id: int,
+    layout: Any | None = None,
+    *,
+    cards: list | None = None,
+) -> dict | None:
+    if has_original_layout_snapshot(digest_id):
+        return None
+
+    target_layout = layout if layout is not None else get_digest_grid_layout(digest_id)
+    if not target_layout:
+        return None
+
+    return create_layout_snapshot(
+        digest_id,
+        ORIGINAL_SNAPSHOT_NAME,
+        target_layout,
+        is_original=True,
+        cards=cards,
+    )
+
+
+def list_layout_snapshots(digest_id: int) -> list[dict]:
+    ensure_original_layout_snapshot(digest_id)
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, name, created_at, COALESCE(is_original, 0), layout_json
+        FROM layout_snapshots
+        WHERE digest_id = ?
+        ORDER BY COALESCE(is_original, 0) DESC, id DESC
+        """,
+        (digest_id,),
+    )
+    rows = []
+    for row in c.fetchall():
+        raw_payload = _parse_layout_json(row[4])
+        card_count, node_count = _snapshot_counts(raw_payload)
+        rows.append(
+            {
+                "id": row[0],
+                "name": row[1],
+                "created_at": row[2],
+                "is_original": bool(row[3]),
+                "card_count": card_count,
+                "node_count": node_count,
+                "has_cards": isinstance(
+                    (raw_payload or {}).get("cards")
+                    if isinstance(raw_payload, dict)
+                    else None,
+                    list,
+                ),
+            }
+        )
     conn.close()
     return rows
 
@@ -222,7 +342,7 @@ def get_layout_snapshot(digest_id: int, snapshot_id: int) -> dict | None:
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, digest_id, name, layout_json, created_at
+        SELECT id, digest_id, name, layout_json, created_at, COALESCE(is_original, 0)
         FROM layout_snapshots
         WHERE id = ? AND digest_id = ?
         """,
@@ -232,32 +352,102 @@ def get_layout_snapshot(digest_id: int, snapshot_id: int) -> dict | None:
     conn.close()
     if not row:
         return None
-    try:
-        layout = json.loads(row[3])
-        if not isinstance(layout, list):
-            layout = []
-    except json.JSONDecodeError:
+    raw_payload = _parse_layout_json(row[3])
+    if raw_payload is None:
+        raw_payload = []
+    layout, cards = _unpack_snapshot_payload(raw_payload)
+    if layout is None:
         layout = []
     return {
         "id": row[0],
         "digest_id": row[1],
         "name": row[2],
         "layout": layout,
+        "cards": cards,
         "created_at": row[4],
+        "is_original": bool(row[5]),
     }
 
 
-def create_layout_snapshot(
-    digest_id: int, name: str, layout: list[dict]
-) -> dict:
+def refresh_original_layout_snapshot(
+    digest_id: int,
+    layout: Any,
+    *,
+    cards: list | None = None,
+) -> dict | None:
+    if not layout:
+        return None
+
+    ensure_original_layout_snapshot(digest_id, layout, cards=cards)
+    payload = _pack_snapshot_payload(layout, cards)
+
     conn = _connect()
     c = conn.cursor()
     c.execute(
         """
-        INSERT INTO layout_snapshots (digest_id, name, layout_json)
-        VALUES (?, ?, ?)
+        UPDATE layout_snapshots
+        SET layout_json = ?, created_at = datetime('now')
+        WHERE digest_id = ? AND COALESCE(is_original, 0) = 1
         """,
-        (digest_id, name, json.dumps(layout, ensure_ascii=False)),
+        (json.dumps(payload, ensure_ascii=False), digest_id),
+    )
+    if c.rowcount == 0:
+        conn.close()
+        return create_layout_snapshot(
+            digest_id,
+            ORIGINAL_SNAPSHOT_NAME,
+            layout,
+            is_original=True,
+            cards=cards,
+        )
+
+    c.execute(
+        """
+        SELECT id, name, created_at, COALESCE(is_original, 0)
+        FROM layout_snapshots
+        WHERE digest_id = ? AND COALESCE(is_original, 0) = 1
+        LIMIT 1
+        """,
+        (digest_id,),
+    )
+    row = c.fetchone()
+    conn.commit()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "digest_id": digest_id,
+        "name": row[1],
+        "layout": layout,
+        "cards": cards,
+        "created_at": row[2],
+        "is_original": bool(row[3]),
+    }
+
+
+def create_layout_snapshot(
+    digest_id: int,
+    name: str,
+    layout: Any,
+    *,
+    is_original: bool = False,
+    cards: list | None = None,
+) -> dict:
+    payload = _pack_snapshot_payload(layout, cards)
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO layout_snapshots (digest_id, name, layout_json, is_original)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            digest_id,
+            name,
+            json.dumps(payload, ensure_ascii=False),
+            1 if is_original else 0,
+        ),
     )
     snapshot_id = c.lastrowid
     c.execute(
@@ -272,15 +462,24 @@ def create_layout_snapshot(
         "digest_id": digest_id,
         "name": name,
         "layout": layout,
+        "cards": cards,
         "created_at": created_at,
+        "is_original": is_original,
     }
 
 
 def delete_layout_snapshot(digest_id: int, snapshot_id: int) -> bool:
+    snapshot = get_layout_snapshot(digest_id, snapshot_id)
+    if not snapshot or snapshot.get("is_original"):
+        return False
+
     conn = _connect()
     c = conn.cursor()
     c.execute(
-        "DELETE FROM layout_snapshots WHERE id = ? AND digest_id = ?",
+        """
+        DELETE FROM layout_snapshots
+        WHERE id = ? AND digest_id = ? AND COALESCE(is_original, 0) = 0
+        """,
         (snapshot_id, digest_id),
     )
     deleted = c.rowcount > 0
@@ -289,12 +488,12 @@ def delete_layout_snapshot(digest_id: int, snapshot_id: int) -> bool:
     return deleted
 
 
-def restore_layout_snapshot(digest_id: int, snapshot_id: int) -> list[dict] | None:
+def restore_layout_snapshot(digest_id: int, snapshot_id: int) -> dict | None:
     snapshot = get_layout_snapshot(digest_id, snapshot_id)
     if not snapshot:
         return None
     save_digest_grid_layout(digest_id, snapshot["layout"])
-    return snapshot["layout"]
+    return snapshot
 
 # [중요!] 내 데이터만 가져오기
 def get_my_digests(userid):
@@ -637,13 +836,79 @@ def get_digest_pages_meta(digest_id: int) -> dict:
     return {"total_pages": len(pages), "pages": pages}
 
 
-def get_digest_page(digest_id: int, page_number: int) -> dict | None:
+def _parse_split_points_json(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    points: list[dict] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        anchor = str(item.get("anchor") or "").strip()
+        try:
+            block_index = int(item.get("block_index", -1))
+        except (TypeError, ValueError):
+            block_index = -1
+        if not anchor and block_index < 0:
+            continue
+        points.append({"anchor": anchor, "block_index": block_index})
+    return points
+
+
+def _serialize_split_points(split_points: list[dict] | None) -> str | None:
+    if not split_points:
+        return None
+    cleaned: list[dict] = []
+    for item in split_points:
+        if not isinstance(item, dict):
+            continue
+        anchor = str(item.get("anchor") or "").strip()
+        try:
+            block_index = int(item.get("block_index", -1))
+        except (TypeError, ValueError):
+            block_index = -1
+        if not anchor and block_index < 0:
+            continue
+        cleaned.append({"anchor": anchor, "block_index": block_index})
+    if not cleaned:
+        return None
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
+def list_digest_page_contents(digest_id: int) -> list[dict]:
     ensure_digest_pages(digest_id)
     conn = _connect()
     c = conn.cursor()
     c.execute(
         """
         SELECT page_number, content
+        FROM digest_pages
+        WHERE digest_id = ?
+        ORDER BY page_number ASC
+        """,
+        (digest_id,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"page_number": page_number, "content": content or ""}
+        for page_number, content in rows
+    ]
+
+
+def get_digest_page(digest_id: int, page_number: int) -> dict | None:
+    ensure_digest_pages(digest_id)
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT page_number, content, split_points_json
         FROM digest_pages
         WHERE digest_id = ? AND page_number = ?
         """,
@@ -653,7 +918,11 @@ def get_digest_page(digest_id: int, page_number: int) -> dict | None:
     conn.close()
     if not row:
         return None
-    return {"page_number": row[0], "content": row[1]}
+    return {
+        "page_number": row[0],
+        "content": row[1],
+        "split_points": _parse_split_points_json(row[2]),
+    }
 
 
 def log_usage(user_id: str, tokens_used: int = 0, usage_date: str | None = None) -> None:
@@ -789,22 +1058,79 @@ def delete_note_by_id(note_id: int):
     return digest_id
 
 
+def _serialize_chat_sources(sources: list[dict] | None) -> str | None:
+    if not sources:
+        return None
+    cleaned = []
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        cleaned.append(
+            {
+                "title": str(item.get("title") or url).strip() or url,
+                "url": url,
+            }
+        )
+    if not cleaned:
+        return None
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
+def _parse_chat_sources(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    sources = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        sources.append(
+            {
+                "title": str(item.get("title") or url).strip() or url,
+                "url": url,
+            }
+        )
+    return sources
+
+
 def save_chat_exchange(
     digest_id: int,
     question: str,
     answer: str,
     selected_text: str = "",
     page_number: int = 1,
+    sources: list[dict] | None = None,
+    verified: bool = False,
 ) -> int:
     conn = _connect()
     c = conn.cursor()
     c.execute(
         """
         INSERT INTO chat_history
-            (digest_id, page_number, selected_text, question, answer)
-        VALUES (?, ?, ?, ?, ?)
+            (digest_id, page_number, selected_text, question, answer, sources_json, is_verified)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (digest_id, page_number, selected_text, question, answer),
+        (
+            digest_id,
+            page_number,
+            selected_text,
+            question,
+            answer,
+            _serialize_chat_sources(sources),
+            1 if verified else 0,
+        ),
     )
     chat_id = c.lastrowid
     conn.commit()
@@ -816,7 +1142,8 @@ def get_chat_history(digest_id: int, page_number=None):
     conn = _connect()
     c = conn.cursor()
     query = """
-        SELECT id, selected_text, question, answer, page_number, created_at
+        SELECT id, selected_text, question, answer, page_number, created_at,
+               sources_json, is_verified
         FROM chat_history
         WHERE digest_id = ?
     """
@@ -836,8 +1163,19 @@ def get_chat_history(digest_id: int, page_number=None):
             "answer": answer or "",
             "page_number": page_number or 1,
             "created_at": created_at,
+            "sources": _parse_chat_sources(sources_json),
+            "is_verified": bool(is_verified),
         }
-        for row_id, selected_text, question, answer, page_number, created_at in rows
+        for (
+            row_id,
+            selected_text,
+            question,
+            answer,
+            page_number,
+            created_at,
+            sources_json,
+            is_verified,
+        ) in rows
     ]
 
 
@@ -846,7 +1184,8 @@ def get_chat_by_id(chat_id: int) -> dict | None:
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, digest_id, selected_text, question, answer, page_number, created_at
+        SELECT id, digest_id, selected_text, question, answer, page_number, created_at,
+               sources_json, is_verified
         FROM chat_history
         WHERE id = ?
         """,
@@ -864,6 +1203,8 @@ def get_chat_by_id(chat_id: int) -> dict | None:
         "answer": row[4] or "",
         "page_number": row[5] or 1,
         "created_at": row[6],
+        "sources": _parse_chat_sources(row[7]),
+        "is_verified": bool(row[8]),
     }
 
 
@@ -904,6 +1245,28 @@ def update_digest_page(digest_id: int, page_number: int, content: str) -> bool:
         WHERE digest_id = ? AND page_number = ?
         """,
         (content, digest_id, page_number),
+    )
+    updated = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def update_digest_page_split_points(
+    digest_id: int,
+    page_number: int,
+    split_points: list[dict] | None,
+) -> bool:
+    ensure_digest_pages(digest_id)
+    conn = _connect()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE digest_pages
+        SET split_points_json = ?
+        WHERE digest_id = ? AND page_number = ?
+        """,
+        (_serialize_split_points(split_points), digest_id, page_number),
     )
     updated = c.rowcount > 0
     conn.commit()

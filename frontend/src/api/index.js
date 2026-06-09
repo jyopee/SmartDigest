@@ -38,6 +38,10 @@ export {
   downloadMarkdownFile,
 } from "./pageService";
 
-export { fetchDigestGrid, saveDigestGridLayout } from "./gridLayoutService";
+export {
+  fetchDigestGrid,
+  saveDigestGridLayout,
+  deleteGridCard,
+} from "./gridLayoutService";
 
 export { API_BASE, API_TIMEOUT, getSummaryStreamUrl } from "./config";

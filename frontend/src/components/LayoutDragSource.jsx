@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { setDragPayload } from "../utils/dragPayload";
+import AccordionBox from "./AccordionBox";
 
 function truncate(text, max = 42) {
   if (!text || text.length <= max) return text || "내용 없음";
@@ -69,49 +70,66 @@ export default function LayoutDragSource({
   onAddToLayout,
   addingToLayoutKey = null,
 }) {
-  if (!notes.length && !chats.length) {
-    return (
-      <div className="layout-drag-source layout-drag-source--empty">
-        <p>
-          주석·질문 탭에서 항목을 만들면 여기에 표시되어 레이아웃으로 드래그할 수
-          있습니다.
-        </p>
-      </div>
-    );
-  }
+  const itemCount = notes.length + chats.length;
+  const dragPreview = itemCount
+    ? `주석 ${notes.length} · 질문 ${chats.length}`
+    : "추가할 항목 없음";
 
   return (
-    <div className="layout-drag-source">
-      <div className="layout-drag-source-head">
-        <h4 className="layout-drag-source-title">학습 카드 추가</h4>
-        <p className="layout-drag-source-guide">
-          아래 항목을 클릭하거나 그리드 영역으로 드래그하세요.
-        </p>
+    <AccordionBox
+      title="학습 카드 추가"
+      className="layout-accordion layout-accordion-drag"
+      collapsedPreview={
+        <p className="layout-accordion-preview">{dragPreview}</p>
+      }
+      trailing={
+        itemCount > 0 ? (
+          <span className="layout-accordion-badge">{itemCount}</span>
+        ) : null
+      }
+    >
+      <div
+        className={`layout-drag-source layout-panel-inner${
+          !itemCount ? " layout-drag-source--empty" : ""
+        }`}
+      >
+        {!itemCount ? (
+          <p className="layout-drag-source-empty-msg">
+            주석·질문 탭에서 항목을 만들면 여기에 표시되어 레이아웃으로 드래그할
+            수 있습니다.
+          </p>
+        ) : (
+          <>
+            <p className="layout-drag-source-guide">
+              클릭하거나 아래 캔버스로 드래그하세요.
+            </p>
+            <div className="layout-drag-source-track">
+              {notes.map((note) => (
+                <DragChip
+                  key={`note-${note.id}`}
+                  label="주석"
+                  title={note.selected_text || note.content}
+                  tone="note"
+                  payload={{ source: "note", sourceId: note.id }}
+                  onAddToLayout={onAddToLayout}
+                  addingToLayoutKey={addingToLayoutKey}
+                />
+              ))}
+              {chats.map((chat) => (
+                <DragChip
+                  key={`chat-${chat.id}`}
+                  label="질문"
+                  title={chat.question}
+                  tone="chat"
+                  payload={{ source: "chat", sourceId: chat.id }}
+                  onAddToLayout={onAddToLayout}
+                  addingToLayoutKey={addingToLayoutKey}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </div>
-      <div className="layout-drag-source-track">
-        {notes.map((note) => (
-          <DragChip
-            key={`note-${note.id}`}
-            label="주석"
-            title={note.selected_text || note.content}
-            tone="note"
-            payload={{ source: "note", sourceId: note.id }}
-            onAddToLayout={onAddToLayout}
-            addingToLayoutKey={addingToLayoutKey}
-          />
-        ))}
-        {chats.map((chat) => (
-          <DragChip
-            key={`chat-${chat.id}`}
-            label="질문"
-            title={chat.question}
-            tone="chat"
-            payload={{ source: "chat", sourceId: chat.id }}
-            onAddToLayout={onAddToLayout}
-            addingToLayoutKey={addingToLayoutKey}
-          />
-        ))}
-      </div>
-    </div>
+    </AccordionBox>
   );
 }

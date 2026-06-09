@@ -7,13 +7,14 @@ import {
   useRef,
   useState,
 } from "react";
-import GridLayout from "react-grid-layout/legacy";
 import GridCardItem from "./GridCardItem";
 import SummaryCard from "./SummaryCard";
+import MindMapCanvas from "./MindMapCanvas";
 import LoadingSpinner from "./LoadingSpinner";
 import { useViewerInteraction } from "../contexts/ViewerInteractionContext";
 import {
   addGridCardFromSource,
+  deleteGridCard,
   fetchDigestGrid,
   saveDigestGridLayout,
 } from "../api/gridLayoutService";
@@ -23,19 +24,12 @@ import {
   applyAnnotationHighlights,
   stripDecorativeMarkup,
 } from "../utils/highlightUtils";
+import { enrichCards } from "../utils/smartLayoutEngine";
 import {
-  buildSmartLayout,
-  commitLayoutItems,
-  enrichCards,
-  ensureLayoutForCards,
-  serializeLayoutForStorage,
-} from "../utils/smartLayoutEngine";
+  buildDefaultMindMapLayout,
+  ensureMindMapLayoutForCards,
+} from "../utils/mindMapLayoutEngine";
 import { buildSourceFocusFromCard } from "../utils/sourceNavigation";
-import "react-grid-layout/css/styles.css";
-import "react-resizable/css/styles.css";
-
-const GRID_COLS = 12;
-const ROW_HEIGHT = 52;
 
 function renderCardItem(card, props) {
   const {
@@ -45,7 +39,14 @@ function renderCardItem(card, props) {
     searchActiveIndex,
     className = "summary-grid-item",
     onNavigateToSource,
+    onDeleteCard,
+    deletingCardId,
   } = props;
+
+  const deleteProps = {
+    onDelete: onDeleteCard,
+    deleting: deletingCardId === card.id,
+  };
 
   if (className === "summary-grid-item") {
     return (
@@ -58,6 +59,8 @@ function renderCardItem(card, props) {
         searchActiveIndex={searchActiveIndex}
         className={className}
         onNavigateToSource={onNavigateToSource}
+        onDelete={deleteProps.onDelete}
+        deletingCardId={deletingCardId}
       />
     );
   }
@@ -81,6 +84,7 @@ function renderCardItem(card, props) {
         card={card}
         highlightedContent={highlighted}
         onNavigateToSource={onNavigateToSource}
+        {...deleteProps}
       />
     </div>
   );
@@ -88,9 +92,11 @@ function renderCardItem(card, props) {
 
 function SummaryGrid({
   digestId,
-  layoutMode = LAYOUT_MODES.GRID,
+  layoutMode = LAYOUT_MODES.MINDMAP,
   layoutReloadToken = 0,
+  restorePayload = null,
   onCardsChanged,
+  onCurrentCardsChange,
   annotations = [],
   searchQuery = "",
   searchActiveIndex = 0,
@@ -107,19 +113,21 @@ function SummaryGrid({
     onHighlightClick ?? viewerInteraction.onHighlightClick;
 
   const [cards, setCards] = useState([]);
-  const [layout, setLayout] = useState([]);
+  const [mindMapLayout, setMindMapLayout] = useState({
+    engine: "mindmap",
+    nodes: [],
+    edges: [],
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dropActive, setDropActive] = useState(false);
   const [dropSaving, setDropSaving] = useState(false);
-  const [gridRevision, setGridRevision] = useState(0);
-  const [gridWidth, setGridWidth] = useState(0);
+  const [deletingCardId, setDeletingCardId] = useState(null);
+  const [layoutRevision, setLayoutRevision] = useState(0);
   const saveTimerRef = useRef(null);
   const containerRef = useRef(null);
-  const gridMountRef = useRef(null);
-  const latestLayoutRef = useRef([]);
+  const latestLayoutRef = useRef({ engine: "mindmap", nodes: [], edges: [] });
   const prevLayoutModeRef = useRef(layoutMode);
-  const isInteractingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,11 +138,11 @@ function SummaryGrid({
       .then((data) => {
         if (cancelled) return;
         const nextCards = enrichCards(data.cards || []);
-        const savedLayout = ensureLayoutForCards(data.layout, nextCards);
+        const savedLayout = ensureMindMapLayoutForCards(data.layout, nextCards);
         latestLayoutRef.current = savedLayout;
         setCards(nextCards);
-        setLayout(savedLayout);
-        setGridRevision((prev) => prev + 1);
+        setMindMapLayout(savedLayout);
+        setLayoutRevision((prev) => prev + 1);
         queueMicrotask(() => onLayoutChange?.(savedLayout));
       })
       .catch((err) => {
@@ -157,43 +165,15 @@ function SummaryGrid({
   );
 
   useEffect(() => {
-    if (layoutMode !== LAYOUT_MODES.GRID || loading) return undefined;
-
-    const node = gridMountRef.current;
-    if (!node) return undefined;
-
-    let frame = null;
-    const measure = () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const width = Math.round(node.getBoundingClientRect().width);
-        if (width > 0) setGridWidth(width);
-        frame = null;
-      });
-    };
-
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    window.addEventListener("resize", measure);
-
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [layoutMode, loading, gridRevision, digestId]);
-
-  useEffect(() => {
     const previousMode = prevLayoutModeRef.current;
     prevLayoutModeRef.current = layoutMode;
     if (
-      layoutMode === LAYOUT_MODES.GRID &&
-      previousMode !== LAYOUT_MODES.GRID &&
-      latestLayoutRef.current.length
+      layoutMode === LAYOUT_MODES.MINDMAP &&
+      previousMode !== LAYOUT_MODES.MINDMAP &&
+      latestLayoutRef.current
     ) {
-      setLayout(latestLayoutRef.current);
-      setGridRevision((prev) => prev + 1);
+      setMindMapLayout(latestLayoutRef.current);
+      setLayoutRevision((prev) => prev + 1);
     }
   }, [layoutMode]);
 
@@ -213,63 +193,59 @@ function SummaryGrid({
   }, [matchingCardIds.length, onSearchMatchesChange]);
 
   useEffect(() => {
+    onCurrentCardsChange?.(cards);
+  }, [cards, onCurrentCardsChange]);
+
+  useEffect(() => {
+    if (!restorePayload?.token || !restorePayload.layout) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+
+    const nextCards = restorePayload.cardsRestored
+      ? enrichCards(restorePayload.cards || [])
+      : cards;
+    const savedLayout = ensureMindMapLayoutForCards(
+      restorePayload.layout,
+      nextCards
+    );
+    latestLayoutRef.current = savedLayout;
+    setCards(nextCards);
+    setMindMapLayout(savedLayout);
+    setLayoutRevision((prev) => prev + 1);
+    queueMicrotask(() => onLayoutChange?.(savedLayout));
+  }, [restorePayload?.token]);
+
+  useEffect(() => {
+    if (layoutMode !== LAYOUT_MODES.MINDMAP) return;
     if (!searchQuery.trim() || !matchingCardIds.length) return;
     const targetId = matchingCardIds[searchActiveIndex % matchingCardIds.length];
     const node = containerRef.current?.querySelector(`[data-card-id="${targetId}"]`);
     node?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [searchQuery, searchActiveIndex, matchingCardIds]);
+  }, [layoutMode, searchQuery, searchActiveIndex, matchingCardIds]);
 
   const persistLayout = useCallback(
     (nextLayout) => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
-        saveDigestGridLayout(
-          digestId,
-          serializeLayoutForStorage(nextLayout)
-        ).catch(() => {});
+        saveDigestGridLayout(digestId, nextLayout).catch(() => {});
       }, 500);
     },
     [digestId]
   );
 
-  const handleLayoutInteractionStop = useCallback(
+  const handleMindMapLayoutChange = useCallback(
     (nextLayout) => {
-      isInteractingRef.current = false;
-      const committed = commitLayoutItems(nextLayout, cards);
-      latestLayoutRef.current = committed;
-      onLayoutChange?.(committed);
-      persistLayout(committed);
+      latestLayoutRef.current = nextLayout;
+      setMindMapLayout(nextLayout);
+      onLayoutChange?.(nextLayout);
     },
-    [cards, onLayoutChange, persistLayout]
+    [onLayoutChange]
   );
 
-  const handleDragStart = useCallback(() => {
-    isInteractingRef.current = true;
-  }, []);
-
-  const handleDragStop = useCallback(
-    (nextLayout) => {
-      handleLayoutInteractionStop(nextLayout);
-    },
-    [handleLayoutInteractionStop]
-  );
-
-  const handleResizeStart = useCallback(() => {
-    isInteractingRef.current = true;
-  }, []);
-
-  const handleResizeStop = useCallback(
-    (nextLayout) => {
-      handleLayoutInteractionStop(nextLayout);
-    },
-    [handleLayoutInteractionStop]
-  );
-
-  const handleApplySmartLayout = () => {
-    const nextLayout = ensureLayoutForCards(buildSmartLayout(cards), cards);
+  const handleApplyDefaultLayout = () => {
+    const nextLayout = buildDefaultMindMapLayout(cards);
     latestLayoutRef.current = nextLayout;
-    setLayout(nextLayout);
-    setGridRevision((prev) => prev + 1);
+    setMindMapLayout(nextLayout);
+    setLayoutRevision((prev) => prev + 1);
     onLayoutChange?.(nextLayout);
     persistLayout(nextLayout);
   };
@@ -308,9 +284,10 @@ function SummaryGrid({
   };
 
   const handleMouseUp = (event) => {
-    if (isInteractingRef.current) return;
-    if (event.target.closest(".react-grid-item, .react-resizable-handle")) return;
-    if (event.target.closest(".sd-highlight, .sd-search-hit")) return;
+    if (event.target.closest(".react-flow__node, .mindmap-card-node")) {
+      if (event.target.closest(".sd-highlight, .sd-search-hit")) return;
+    }
+    if (event.target.closest(".react-flow__pane")) return;
 
     const selection = window.getSelection();
     const selectedText = selection?.toString().trim() || "";
@@ -358,6 +335,44 @@ function SummaryGrid({
     [onNavigateToSource]
   );
 
+  const handleDeleteCard = useCallback(
+    async (card) => {
+      if (!card?.id) return;
+      const label = card.title || "카드";
+      const followUp = card.source
+        ? "주석·질문 원본은 유지됩니다."
+        : "삭제한 요약 카드는 다시 요약하기 전까지 복구할 수 없습니다.";
+      if (
+        !window.confirm(
+          `"${label}"을(를) 레이아웃에서 제거할까요?\n${followUp}`
+        )
+      ) {
+        return;
+      }
+
+      setDeletingCardId(card.id);
+      setError("");
+      try {
+        const result = await deleteGridCard(digestId, card.id);
+        const nextLayout = ensureMindMapLayoutForCards(
+          result.layout,
+          cards.filter((item) => item.id !== card.id)
+        );
+        latestLayoutRef.current = nextLayout;
+        setCards((prev) => prev.filter((item) => item.id !== card.id));
+        setMindMapLayout(nextLayout);
+        setLayoutRevision((prev) => prev + 1);
+        onLayoutChange?.(nextLayout);
+        onCardsChanged?.();
+      } catch (err) {
+        setError(err.message || "카드를 제거하지 못했습니다.");
+      } finally {
+        setDeletingCardId(null);
+      }
+    },
+    [digestId, cards, onCardsChanged, onLayoutChange]
+  );
+
   const cardRenderProps = useMemo(
     () => ({
       annotations,
@@ -365,6 +380,8 @@ function SummaryGrid({
       matchingCardIds,
       searchActiveIndex,
       onNavigateToSource: handleCardSourceNavigate,
+      onDeleteCard: handleDeleteCard,
+      deletingCardId,
     }),
     [
       annotations,
@@ -372,6 +389,8 @@ function SummaryGrid({
       matchingCardIds,
       searchActiveIndex,
       handleCardSourceNavigate,
+      handleDeleteCard,
+      deletingCardId,
     ]
   );
 
@@ -388,59 +407,6 @@ function SummaryGrid({
     [cards]
   );
 
-  const gridMinHeight = useMemo(() => {
-    if (!layout.length) return 240;
-    const maxRow = layout.reduce(
-      (max, item) => Math.max(max, (Number(item.y) || 0) + (Number(item.h) || 0)),
-      0
-    );
-    return maxRow * (ROW_HEIGHT + 10) + 32;
-  }, [layout]);
-
-  const gridChildren = useMemo(
-    () =>
-      cards.map((card) => {
-        const cardAnnotations = annotations.filter(
-          (ann) => (ann.page_number || 1) === (card.page_number || 1)
-        );
-        const highlightedContent = applyAnnotationHighlights(
-          stripDecorativeMarkup(card.content),
-          cardAnnotations
-        );
-        const isMatch =
-          !searchQuery.trim() || matchingCardIds.includes(card.id);
-        const isActive =
-          searchQuery.trim() &&
-          matchingCardIds[searchActiveIndex % matchingCardIds.length] ===
-            card.id;
-
-        return (
-          <div
-            key={String(card.id)}
-            data-card-id={String(card.id)}
-            data-page-number={card.page_number || 1}
-            className={`summary-grid-item${isMatch ? "" : " is-search-hidden"}${
-              isActive ? " is-search-active" : ""
-            }`}
-          >
-            <SummaryCard
-              card={card}
-              highlightedContent={highlightedContent}
-              onNavigateToSource={handleCardSourceNavigate}
-            />
-          </div>
-        );
-      }),
-    [
-      cards,
-      annotations,
-      searchQuery,
-      matchingCardIds,
-      searchActiveIndex,
-      handleCardSourceNavigate,
-    ]
-  );
-
   if (loading) {
     return <LoadingSpinner label="요약 카드를 불러오는 중..." />;
   }
@@ -453,7 +419,7 @@ function SummaryGrid({
     <div
       ref={containerRef}
       className={`summary-grid-wrap summary-layout-${layoutMode}${
-        layoutMode === LAYOUT_MODES.GRID ? " summary-layout-grid" : ""
+        layoutMode === LAYOUT_MODES.MINDMAP ? " summary-layout-mindmap" : ""
       }${dropActive ? " is-drop-target" : ""}${dropSaving ? " is-drop-saving" : ""}${
         !cards.length ? " summary-grid-wrap--empty" : ""
       }`}
@@ -479,53 +445,19 @@ function SummaryGrid({
         </p>
       )}
 
-      {cards.length > 0 && layoutMode === LAYOUT_MODES.GRID && (
-        <>
-        <div className="smart-layout-toolbar">
-          <p className="smart-layout-guide">
-            AI 중요도(weight)에 따라 카드 크기가 자동 배치됩니다. 주제는 크게, 상세·질문은 작게 표시됩니다.
-          </p>
-          <button
-            type="button"
-            className="smart-layout-apply-btn"
-            onClick={handleApplySmartLayout}
-          >
-            스마트 배치 다시 적용
-          </button>
-        </div>
-        <div
-          ref={gridMountRef}
-          className="summary-grid-root"
-          style={{ minHeight: gridMinHeight }}
-        >
-          {gridWidth > 0 && (
-            <GridLayout
-              key={`summary-grid-${digestId}-${gridRevision}`}
-              className="summary-grid"
-              width={gridWidth}
-              layout={layout}
-              cols={GRID_COLS}
-              rowHeight={ROW_HEIGHT}
-              margin={[10, 10]}
-              containerPadding={[0, 0]}
-              style={{ minHeight: gridMinHeight }}
-              isDraggable
-              isResizable
-              useCSSTransforms
-              draggableHandle=".summary-card-drag-handle"
-              draggableCancel=".summary-card-body, .summary-card-source-link, button, a, .sd-highlight"
-              compactType="vertical"
-              resizeHandles={["se"]}
-              onDragStart={handleDragStart}
-              onDragStop={handleDragStop}
-              onResizeStart={handleResizeStart}
-              onResizeStop={handleResizeStop}
-            >
-              {gridChildren}
-            </GridLayout>
-          )}
-        </div>
-        </>
+      {cards.length > 0 && layoutMode === LAYOUT_MODES.MINDMAP && (
+        <MindMapCanvas
+          cards={cards}
+          mindMapLayout={mindMapLayout}
+          cardProps={cardRenderProps}
+          layoutRevision={layoutRevision}
+          onLayoutChange={handleMindMapLayoutChange}
+          onPersistLayout={persistLayout}
+          onApplyDefaultLayout={handleApplyDefaultLayout}
+          searchQuery={searchQuery}
+          matchingCardIds={matchingCardIds}
+          searchActiveIndex={searchActiveIndex}
+        />
       )}
 
       {cards.length > 0 && layoutMode === LAYOUT_MODES.SPLIT && (

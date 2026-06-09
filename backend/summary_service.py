@@ -9,7 +9,7 @@ import database as db
 from document_extractor import extract_text_from_upload
 from gemini_client import format_gemini_error, is_rate_limit_error
 from usage_tracker import sync_usage_to_limit
-from summary_cards import build_smart_layout
+from summary_cards import build_default_mindmap_layout
 from summary_engine import map_reduce_summarize
 from usage_tracker import reset_usage_user, set_usage_user
 
@@ -77,14 +77,20 @@ async def run_summary_job(
             _complete_with_existing_digest(job_id, existing)
             return
 
-        is_pptx = filename.lower().endswith(".pptx")
+        lower_name = filename.lower()
+        is_pptx = lower_name.endswith(".pptx")
+        is_pdf = lower_name.endswith(".pdf")
         update_job(
             job_id,
             progress=2,
             message=(
                 "PPTX 분석 중... 이미지 슬라이드는 OCR로 텍스트를 읽습니다."
                 if is_pptx
-                else "파일에서 텍스트를 추출하는 중..."
+                else (
+                    "PDF 분석 중... 스캔 페이지는 OCR로 텍스트를 읽습니다."
+                    if is_pdf
+                    else "파일에서 텍스트를 추출하는 중..."
+                )
             ),
         )
 
@@ -106,13 +112,14 @@ async def run_summary_job(
 
         update_job(job_id, progress=95, message="요약 결과를 저장하는 중...")
         pages = result["partial_summaries"] or [result["summary"]]
-        default_layout = build_smart_layout(result.get("cards") or [])
+        default_layout = build_default_mindmap_layout(result.get("cards") or [])
         digest_id = db.save_digest_with_pages_and_layout(
             user_id,
             filename,
             result["summary"],
             pages,
             default_layout,
+            cards=result.get("cards") or [],
         )
 
         update_job(

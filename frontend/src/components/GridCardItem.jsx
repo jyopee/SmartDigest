@@ -13,6 +13,8 @@ function GridCardItem({
   searchActiveIndex,
   className = "summary-grid-item",
   onNavigateToSource,
+  onDelete,
+  deletingCardId,
 }) {
   const highlightedContent = useMemo(() => {
     const cardAnnotations = annotations.filter(
@@ -41,6 +43,8 @@ function GridCardItem({
         card={card}
         highlightedContent={highlightedContent}
         onNavigateToSource={onNavigateToSource}
+        onDelete={onDelete}
+        deleting={deletingCardId === card.id}
       />
     </div>
   );

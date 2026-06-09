@@ -1,6 +1,6 @@
 import json
 import asyncio
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -10,14 +10,18 @@ from sse_starlette.sse import EventSourceResponse
 
 import database as db
 import summary_service as summary_jobs
-from chat_engine import ask_question
+from chat_engine import ask_question_rag
 from document_extractor import extract_text_from_upload
 from gemini_client import close_client, format_gemini_error
 from summary_cards import (
     add_card_from_source,
+    build_default_mindmap_layout,
     build_smart_layout,
     build_storage_payload,
+    is_mindmap_layout,
+    normalize_layout_for_cards,
     parse_digest_content,
+    remove_card_from_grid,
 )
 from summary_engine import map_reduce_summarize
 from usage_tracker import (
@@ -81,19 +85,42 @@ class NoteUpdateRequest(BaseModel):
 
 class ChatAskRequest(BaseModel):
     digest_id: int
+    user_id: str
     question: str
     selected_text: str = ""
     page_number: int = Field(default=1, ge=1)
 
+class SplitPointRecord(BaseModel):
+    anchor: str = ""
+    block_index: int = Field(default=-1, ge=-1)
+
 class PageSaveRequest(BaseModel):
     content: str
 
+class PageSplitsSaveRequest(BaseModel):
+    split_points: list[SplitPointRecord] = []
+
 class GridLayoutSaveRequest(BaseModel):
-    layout: list[dict]
+    layout: Any
 
 class LayoutSnapshotCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    layout: list[dict]
+    layout: Any
+    cards: list | None = None
+
+class OriginalSnapshotRefreshRequest(BaseModel):
+    layout: Any
+    cards: list | None = None
+
+
+def _layout_has_content(layout: Any) -> bool:
+    if not layout:
+        return False
+    if isinstance(layout, list):
+        return len(layout) > 0
+    if is_mindmap_layout(layout):
+        return len(layout.get("nodes") or []) > 0
+    return False
 
 class GridCardFromSourceRequest(BaseModel):
     source: Literal["note", "chat"]
@@ -267,13 +294,14 @@ async def upload_document(user_id: str = Form(...), file: UploadFile = File(...)
     finally:
         reset_usage_user(usage_token)
     pages = result["partial_summaries"] or [result["summary"]]
-    default_layout = build_smart_layout(result.get("cards") or [])
+    default_layout = build_default_mindmap_layout(result.get("cards") or [])
     digest_id = db.save_digest_with_pages_and_layout(
         user_id,
         file.filename,
         result["summary"],
         pages,
         default_layout,
+        cards=result.get("cards") or [],
     )
     return {
         "status": "success",
@@ -290,11 +318,18 @@ async def get_digest_grid(digest_id: int, user_id: str = Query(...)):
 
     parsed = parse_digest_content(digest["content"])
     cards = parsed["cards"]
-    layout = db.get_digest_grid_layout(digest_id)
-    if not layout:
-        layout = build_smart_layout(cards)
-        if layout:
-            db.save_digest_grid_layout(digest_id, layout)
+    raw_layout = db.get_digest_grid_layout(digest_id)
+    layout = normalize_layout_for_cards(raw_layout, cards)
+    should_persist = (
+        _layout_has_content(layout)
+        and (
+            not raw_layout
+            or (is_mindmap_layout(layout) and not is_mindmap_layout(raw_layout))
+        )
+    )
+    if should_persist:
+        db.save_digest_grid_layout(digest_id, layout)
+    db.ensure_original_layout_snapshot(digest_id, layout, cards=cards)
 
     return {
         "digest_id": digest_id,
@@ -314,7 +349,7 @@ async def save_digest_grid_layout(
     if not digest:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
 
-    if not body.layout:
+    if not _layout_has_content(body.layout):
         raise HTTPException(status_code=400, detail="레이아웃이 비어 있습니다.")
 
     db.save_digest_grid_layout(digest_id, body.layout)
@@ -345,10 +380,46 @@ async def create_digest_layout_snapshot(
     if not digest:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
 
-    if not body.layout:
+    if not _layout_has_content(body.layout):
         raise HTTPException(status_code=400, detail="레이아웃이 비어 있습니다.")
 
-    snapshot = db.create_layout_snapshot(digest_id, body.name.strip(), body.layout)
+    snapshot_name = body.name.strip()
+    if snapshot_name == db.ORIGINAL_SNAPSHOT_NAME:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{db.ORIGINAL_SNAPSHOT_NAME}'은(는) 예약된 스냅샷 이름입니다.",
+        )
+
+    snapshot = db.create_layout_snapshot(
+        digest_id,
+        snapshot_name,
+        body.layout,
+        cards=body.cards,
+    )
+    return {"status": "success", "snapshot": snapshot}
+
+
+@app.put("/api/digests/{digest_id}/grid/snapshots/original")
+async def refresh_digest_original_snapshot(
+    digest_id: int,
+    body: OriginalSnapshotRefreshRequest,
+    user_id: str = Query(...),
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    if not _layout_has_content(body.layout):
+        raise HTTPException(status_code=400, detail="레이아웃이 비어 있습니다.")
+
+    snapshot = db.refresh_original_layout_snapshot(
+        digest_id,
+        body.layout,
+        cards=body.cards,
+    )
+    if not snapshot:
+        raise HTTPException(status_code=500, detail="원본 스냅샷을 갱신하지 못했습니다.")
+
     return {"status": "success", "snapshot": snapshot}
 
 
@@ -362,15 +433,23 @@ async def restore_digest_layout_snapshot(
     if not digest:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
 
-    layout = db.restore_layout_snapshot(digest_id, snapshot_id)
-    if layout is None:
+    snapshot = db.restore_layout_snapshot(digest_id, snapshot_id)
+    if snapshot is None:
         raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+
+    restored_cards = snapshot.get("cards")
+    if restored_cards:
+        db.update_digest_content(
+            digest_id, build_storage_payload(restored_cards)
+        )
 
     return {
         "status": "success",
         "digest_id": digest_id,
         "snapshot_id": snapshot_id,
-        "layout": layout,
+        "layout": snapshot["layout"],
+        "cards": restored_cards or [],
+        "cards_restored": bool(restored_cards),
     }
 
 
@@ -394,7 +473,9 @@ async def add_digest_grid_card_from_source(
             raise HTTPException(status_code=404, detail="질문 기록을 찾을 수 없습니다.")
 
     parsed = parse_digest_content(digest["content"])
-    layout = db.get_digest_grid_layout(digest_id) or []
+    layout = normalize_layout_for_cards(
+        db.get_digest_grid_layout(digest_id), parsed["cards"]
+    )
     try:
         card, next_layout, next_cards, already_exists = add_card_from_source(
             parsed["cards"],
@@ -418,6 +499,38 @@ async def add_digest_grid_card_from_source(
     }
 
 
+@app.delete("/api/digests/{digest_id}/grid/cards/{card_id}")
+async def delete_digest_grid_card(
+    digest_id: int,
+    card_id: str,
+    user_id: str = Query(...),
+):
+    digest = db.get_digest_by_id(user_id, digest_id)
+    if not digest:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    parsed = parse_digest_content(digest["content"])
+    layout = normalize_layout_for_cards(
+        db.get_digest_grid_layout(digest_id), parsed["cards"]
+    )
+    try:
+        next_cards, next_layout = remove_card_from_grid(
+            parsed["cards"], layout, card_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    db.update_digest_content(digest_id, build_storage_payload(next_cards))
+    db.save_digest_grid_layout(digest_id, next_layout)
+
+    return {
+        "status": "success",
+        "digest_id": digest_id,
+        "card_id": card_id,
+        "layout": next_layout,
+    }
+
+
 @app.delete("/api/digests/{digest_id}/grid/snapshots/{snapshot_id}")
 async def delete_digest_layout_snapshot(
     digest_id: int,
@@ -427,6 +540,15 @@ async def delete_digest_layout_snapshot(
     digest = db.get_digest_by_id(user_id, digest_id)
     if not digest:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    snapshot = db.get_layout_snapshot(digest_id, snapshot_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+    if snapshot.get("is_original"):
+        raise HTTPException(
+            status_code=403,
+            detail="원본 스냅샷은 삭제할 수 없습니다.",
+        )
 
     if not db.delete_layout_snapshot(digest_id, snapshot_id):
         raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
@@ -477,6 +599,34 @@ async def save_digest_page(
         "digest_id": digest_id,
         "page_number": page,
         "content": content,
+        "total_pages": meta["total_pages"],
+    }
+
+
+@app.put("/api/digests/{digest_id}/pages/splits")
+async def save_digest_page_splits(
+    digest_id: int,
+    body: PageSplitsSaveRequest,
+    page: int = Query(..., ge=1),
+):
+    if db.get_digest_content_by_id(digest_id) is None:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    split_points = [
+        {"anchor": point.anchor.strip(), "block_index": point.block_index}
+        for point in body.split_points
+    ]
+
+    if not db.update_digest_page_split_points(digest_id, page, split_points):
+        raise HTTPException(status_code=404, detail="페이지를 찾을 수 없습니다.")
+
+    page_data = db.get_digest_page(digest_id, page)
+    meta = db.get_digest_pages_meta(digest_id)
+    return {
+        "status": "success",
+        "digest_id": digest_id,
+        "page_number": page,
+        "split_points": page_data["split_points"] if page_data else [],
         "total_pages": meta["total_pages"],
     }
 
@@ -589,31 +739,40 @@ async def delete_note(note_id: int):
 @app.post("/api/chat/ask")
 async def chat_ask(body: ChatAskRequest):
     question = body.question.strip()
+    user_id = body.user_id.strip()
     if not question:
         raise HTTPException(status_code=400, detail="질문을 입력하세요.")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="사용자 정보가 없습니다.")
+
+    if is_quota_exhausted(user_id):
+        raise HTTPException(status_code=429, detail=QUOTA_EXCEEDED_MESSAGE)
 
     if db.get_digest_content_by_id(body.digest_id) is None:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
 
-    db.ensure_digest_pages(body.digest_id)
-    page_data = db.get_digest_page(body.digest_id, body.page_number)
-    page_content = page_data["content"] if page_data else ""
-
+    usage_token = set_usage_user(user_id)
     try:
-        answer = await ask_question(
+        result = await ask_question_rag(
+            body.digest_id,
             question,
             selected_text=body.selected_text.strip(),
-            page_content=page_content,
+            page_number=body.page_number,
+            user_id=user_id,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=format_gemini_error(exc)) from exc
+    finally:
+        reset_usage_user(usage_token)
 
     chat_id = db.save_chat_exchange(
         body.digest_id,
         question,
-        answer,
+        result.answer,
         selected_text=body.selected_text.strip(),
         page_number=body.page_number,
+        sources=result.sources,
+        verified=result.verified,
     )
     chats = db.get_chat_history(body.digest_id)
     created = next((c for c in chats if c["id"] == chat_id), None)

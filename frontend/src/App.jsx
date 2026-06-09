@@ -119,7 +119,7 @@ export default function App() {
     total: 1,
     active: false,
   });
-  const [currentLayout, setCurrentLayout] = useState(LAYOUT_MODES.GRID);
+  const [currentLayout, setCurrentLayout] = useState(LAYOUT_MODES.MINDMAP);
   const [readerAlign, setReaderAlign] = useState("left");
   const [layoutGridReloadToken, setLayoutGridReloadToken] = useState(0);
   const [addingToLayoutKey, setAddingToLayoutKey] = useState(null);

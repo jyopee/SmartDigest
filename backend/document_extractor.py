@@ -11,6 +11,9 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 PDF_CHUNK_PAGES = 5
+PDF_MIN_TEXT_CHARS = 20
+PDF_OCR_DPI = 150
+PDF_OCR_WORKERS = 4
 PPTX_CHUNK_SLIDES = 5
 TEXT_CHUNK_CHARS = 3000
 PPTX_IMAGE_MIME = {
@@ -47,10 +50,60 @@ def chunk_text_by_chars(text: str, chunk_size: int = TEXT_CHUNK_CHARS) -> list[s
     return chunks
 
 
-def extract_pdf_page_texts(raw: bytes) -> list[str]:
+def _page_needs_ocr(text: str) -> bool:
+    return len(text.strip()) < PDF_MIN_TEXT_CHARS
+
+
+def _render_pdf_page_png(page, dpi: int = PDF_OCR_DPI) -> bytes:
+    zoom = dpi / 72
+    matrix = fitz.Matrix(zoom, zoom)
+    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+    return pixmap.tobytes("png")
+
+
+def _ocr_pdf_pages(
+    pages_for_ocr: list[tuple[int, bytes]],
+    user_id: str | None = None,
+) -> dict[int, str]:
+    from vision_text import extract_text_from_pdf_page_image
+
+    results: dict[int, str] = {}
+    if not pages_for_ocr:
+        return results
+
+    with ThreadPoolExecutor(max_workers=PDF_OCR_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                extract_text_from_pdf_page_image,
+                image_bytes,
+                page_number=page_index + 1,
+                user_id=user_id,
+            ): page_index
+            for page_index, image_bytes in pages_for_ocr
+        }
+        for future in as_completed(futures):
+            page_index = futures[future]
+            results[page_index] = future.result()
+    return results
+
+
+def extract_pdf_page_texts(raw: bytes, user_id: str | None = None) -> list[str]:
     doc = fitz.open(stream=raw, filetype="pdf")
     try:
-        return [page.get_text("text", sort=True) for page in doc]
+        page_texts = [page.get_text("text", sort=True) for page in doc]
+        pages_for_ocr: list[tuple[int, bytes]] = []
+
+        for page_index, text in enumerate(page_texts):
+            if _page_needs_ocr(text):
+                pages_for_ocr.append((page_index, _render_pdf_page_png(doc[page_index])))
+
+        if pages_for_ocr:
+            ocr_results = _ocr_pdf_pages(pages_for_ocr, user_id=user_id)
+            for page_index, ocr_text in ocr_results.items():
+                if ocr_text.strip():
+                    page_texts[page_index] = ocr_text
+
+        return page_texts
     finally:
         doc.close()
 
@@ -220,9 +273,14 @@ def extract_text_from_upload(
     file_type = filename.rsplit(".", 1)[-1].lower()
 
     if file_type == "pdf":
-        pdf_page_texts = extract_pdf_page_texts(raw)
+        pdf_page_texts = extract_pdf_page_texts(raw, user_id=user_id)
         text = "\n".join(pdf_page_texts)
         source_chunks = build_pdf_chunks(pdf_page_texts)
+        if not source_chunks:
+            raise ValueError(
+                "PDF에서 텍스트를 읽지 못했습니다. "
+                "스캔 문서는 OCR을 시도했으나 내용을 찾지 못했습니다."
+            )
     elif file_type == "docx":
         document = Document(io.BytesIO(raw))
         text = "\n".join(para.text for para in document.paragraphs if para.text.strip())

@@ -2,13 +2,14 @@ import { useCallback, useRef, useState } from "react";
 import { LAYOUT_OPTIONS } from "../constants/layoutModes";
 
 function LayoutOptionIcon({ type }) {
-  if (type === "grid") {
+  if (type === "mindmap") {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="3" y="3" width="8" height="8" rx="1.5" />
-        <rect x="13" y="3" width="8" height="8" rx="1.5" />
-        <rect x="3" y="13" width="8" height="8" rx="1.5" />
-        <rect x="13" y="13" width="8" height="8" rx="1.5" />
+        <circle cx="6" cy="12" r="2.5" />
+        <circle cx="18" cy="7" r="2.5" />
+        <circle cx="18" cy="17" r="2.5" />
+        <path d="M8.4 11.2 15.4 8.2" />
+        <path d="M8.4 12.8 15.4 15.8" />
       </svg>
     );
   }

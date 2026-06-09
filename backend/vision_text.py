@@ -21,6 +21,13 @@ OCR_PROMPT = (
     "읽을 수 있는 텍스트가 없으면 빈 문자열만 반환하세요."
 )
 
+PDF_PAGE_OCR_PROMPT = (
+    "이 문서 페이지(스캔 이미지)에 보이는 모든 텍스트를 빠짐없이 추출하세요. "
+    "제목, 본문, 표, 각주, 불릿 목록을 원문 순서대로 적으세요. "
+    "설명·요약·해석은 하지 말고 텍스트만 출력하세요. "
+    "읽을 수 있는 텍스트가 없으면 빈 문자열만 반환하세요."
+)
+
 
 @retry(
     retry=retry_if_exception(is_retryable_api_error),
@@ -31,14 +38,17 @@ OCR_PROMPT = (
 def _ocr_image_sync(
     image_bytes: bytes,
     mime_type: str,
-    slide_number: int,
+    page_number: int,
     user_id: str | None = None,
+    *,
+    prompt: str = OCR_PROMPT,
+    page_label: str = "슬라이드",
 ) -> str:
     response = get_client().models.generate_content(
         model=GEMINI_MODEL,
         contents=[
             types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-            f"{OCR_PROMPT}\n(슬라이드 번호: {slide_number})",
+            f"{prompt}\n({page_label} 번호: {page_number})",
         ],
         config=types.GenerateContentConfig(
             max_output_tokens=4096,
@@ -59,7 +69,32 @@ def extract_text_from_slide_images(
     for image_bytes, mime_type in images:
         if not image_bytes:
             continue
-        text = _ocr_image_sync(image_bytes, mime_type, slide_number, user_id)
+        text = _ocr_image_sync(
+            image_bytes,
+            mime_type,
+            slide_number,
+            user_id,
+            prompt=OCR_PROMPT,
+            page_label="슬라이드",
+        )
         if text:
             parts.append(text)
     return "\n\n".join(parts)
+
+
+def extract_text_from_pdf_page_image(
+    image_bytes: bytes,
+    *,
+    page_number: int,
+    user_id: str | None = None,
+) -> str:
+    if not image_bytes:
+        return ""
+    return _ocr_image_sync(
+        image_bytes,
+        "image/png",
+        page_number,
+        user_id,
+        prompt=PDF_PAGE_OCR_PROMPT,
+        page_label="페이지",
+    )

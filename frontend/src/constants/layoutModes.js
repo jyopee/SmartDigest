@@ -1,16 +1,19 @@
 export const LAYOUT_MODES = {
-  GRID: "grid",
+  MINDMAP: "mindmap",
   SPLIT: "split",
   LIST: "list",
 };
 
+/** @deprecated use LAYOUT_MODES.MINDMAP */
+export const LEGACY_GRID_MODE = "grid";
+
 export const LAYOUT_OPTIONS = [
   {
-    id: LAYOUT_MODES.GRID,
-    label: "Grid",
-    title: "격자 배치",
-    description: "카드를 자유롭게 드래그·리사이즈",
-    icon: "grid",
+    id: LAYOUT_MODES.MINDMAP,
+    label: "Mindmap",
+    title: "마인드맵",
+    description: "카드를 자유 배치하고 연결",
+    icon: "mindmap",
   },
   {
     id: LAYOUT_MODES.SPLIT,
@@ -29,10 +32,11 @@ export const LAYOUT_OPTIONS = [
 ];
 
 export function loadLayoutMode(digestId) {
-  if (!digestId) return LAYOUT_MODES.GRID;
+  if (!digestId) return LAYOUT_MODES.MINDMAP;
   const saved = localStorage.getItem(`smartdigest_layout_mode_${digestId}`);
+  if (saved === LEGACY_GRID_MODE) return LAYOUT_MODES.MINDMAP;
   if (saved && Object.values(LAYOUT_MODES).includes(saved)) return saved;
-  return LAYOUT_MODES.GRID;
+  return LAYOUT_MODES.MINDMAP;
 }
 
 export function saveLayoutMode(digestId, mode) {

@@ -18,7 +18,13 @@ const SOURCE_LABELS = {
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeRaw];
 
-function SummaryCard({ card, highlightedContent, onNavigateToSource }) {
+function SummaryCard({
+  card,
+  highlightedContent,
+  onNavigateToSource,
+  onDelete,
+  deleting = false,
+}) {
   const cardType = normalizeCardType(card.type);
   const weight = normalizeWeight(card.weight, cardType);
   const sourceLabel = SOURCE_LABELS[card.source];
@@ -58,6 +64,21 @@ function SummaryCard({ card, highlightedContent, onNavigateToSource }) {
             title="주석을 작성한 원문 위치로 이동"
           >
             원문 위치로
+          </button>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            className="summary-card-delete-btn"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete(card);
+            }}
+            disabled={deleting}
+            title="레이아웃에서 제거"
+            aria-label="카드 제거"
+          >
+            {deleting ? "…" : "×"}
           </button>
         )}
         <span className="summary-card-drag-handle" title="드래그하여 이동">

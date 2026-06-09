@@ -28,3 +28,11 @@ export async function addGridCardFromSource(digestId, source, sourceId) {
   );
   return data;
 }
+
+export async function deleteGridCard(digestId, cardId) {
+  const { data } = await api.delete(
+    `/api/digests/${digestId}/grid/cards/${encodeURIComponent(cardId)}`,
+    { params: { user_id: currentUserId() } }
+  );
+  return data;
+}

@@ -24,6 +24,8 @@ function LayoutViewer({
   const [searchActiveIndex, setSearchActiveIndex] = useState(0);
   const [searchMatchCount, setSearchMatchCount] = useState(0);
   const [currentLayout, setCurrentLayout] = useState([]);
+  const [currentCards, setCurrentCards] = useState([]);
+  const [restorePayload, setRestorePayload] = useState(null);
   const [activeSnapshotId, setActiveSnapshotId] = useState(null);
   const [internalReloadToken, setInternalReloadToken] = useState(0);
   const gridReloadToken = layoutReloadToken + internalReloadToken;
@@ -41,6 +43,8 @@ function LayoutViewer({
   useEffect(() => {
     clearSearch();
     setCurrentLayout([]);
+    setCurrentCards([]);
+    setRestorePayload(null);
     setActiveSnapshotId(null);
   }, [digestId, clearSearch]);
 
@@ -83,27 +87,40 @@ function LayoutViewer({
         />
       )}
 
-      <LayoutSnapshotBar
-        digestId={digestId}
-        currentLayout={currentLayout}
-        activeSnapshotId={activeSnapshotId}
-        onActiveSnapshotChange={setActiveSnapshotId}
-        onLayoutRestored={() => {
-          setInternalReloadToken((prev) => prev + 1);
-        }}
-      />
+      <div className="layout-viewer-panels">
+        <LayoutSnapshotBar
+          digestId={digestId}
+          currentLayout={currentLayout}
+          currentCards={currentCards}
+          activeSnapshotId={activeSnapshotId}
+          onActiveSnapshotChange={setActiveSnapshotId}
+          onLayoutRestored={(result) => {
+            if (result?.layout) {
+              setCurrentLayout(result.layout);
+            }
+            setRestorePayload({
+              layout: result?.layout,
+              cards: result?.cards || [],
+              cardsRestored: Boolean(result?.cards_restored),
+              token: Date.now(),
+            });
+          }}
+        />
 
-      <LayoutDragSource
-        notes={notes}
-        chats={chats}
-        onAddToLayout={onAddToLayout}
-        addingToLayoutKey={addingToLayoutKey}
-      />
+        <LayoutDragSource
+          notes={notes}
+          chats={chats}
+          onAddToLayout={onAddToLayout}
+          addingToLayoutKey={addingToLayoutKey}
+        />
+      </div>
 
       <SummaryGrid
         digestId={digestId}
         layoutMode={layoutMode}
         layoutReloadToken={gridReloadToken}
+        restorePayload={restorePayload}
+        onCurrentCardsChange={setCurrentCards}
         onCardsChanged={() => {
           setInternalReloadToken((prev) => prev + 1);
           onLayoutReload?.();

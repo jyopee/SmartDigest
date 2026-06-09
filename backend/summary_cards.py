@@ -347,9 +347,138 @@ def card_from_chat(chat: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+MINDMAP_ENGINE = "mindmap"
+MINDMAP_PADDING_X = 96
+MINDMAP_PADDING_Y = 96
+MINDMAP_STEP_X = 380
+MINDMAP_STEP_Y = 240
+
+
+def is_mindmap_layout(layout: Any) -> bool:
+    return (
+        isinstance(layout, dict)
+        and str(layout.get("engine") or "") == MINDMAP_ENGINE
+    )
+
+
+def build_default_mindmap_layout(cards: list[dict[str, Any]]) -> dict[str, Any]:
+    if not cards:
+        return {"engine": MINDMAP_ENGINE, "nodes": [], "edges": []}
+
+    sorted_cards = sorted(
+        cards,
+        key=lambda card: (
+            -normalize_weight(card.get("weight"), normalize_card_type(card.get("type"))),
+            TYPE_SORT_ORDER.get(normalize_card_type(card.get("type")), 9),
+            str(card.get("title") or ""),
+        ),
+    )
+
+    nodes: list[dict[str, Any]] = []
+    col = 0
+    row = 0
+    for card in sorted_cards:
+        nodes.append(
+            {
+                "id": card["id"],
+                "x": MINDMAP_PADDING_X + col * MINDMAP_STEP_X,
+                "y": MINDMAP_PADDING_Y + row * MINDMAP_STEP_Y,
+            }
+        )
+        col += 1
+        if col >= 3:
+            col = 0
+            row += 1
+
+    return {"engine": MINDMAP_ENGINE, "nodes": nodes, "edges": []}
+
+
+def normalize_layout_for_cards(
+    layout: Any, cards: list[dict[str, Any]]
+) -> dict[str, Any] | list[dict[str, Any]]:
+    if is_mindmap_layout(layout):
+        return ensure_mindmap_layout_for_cards(layout, cards)
+    if isinstance(layout, list) and layout:
+        return layout
+    if cards:
+        return build_default_mindmap_layout(cards)
+    return build_default_mindmap_layout([])
+
+
+def ensure_mindmap_layout_for_cards(
+    layout: dict[str, Any], cards: list[dict[str, Any]]
+) -> dict[str, Any]:
+    card_ids = {str(card.get("id")) for card in cards}
+    seen: set[str] = set()
+    nodes: list[dict[str, Any]] = []
+
+    for node in layout.get("nodes") or []:
+        node_id = str(node.get("id") or "")
+        if not node_id or node_id not in card_ids or node_id in seen:
+            continue
+        seen.add(node_id)
+        nodes.append(
+            {
+                "id": node_id,
+                "x": int(node.get("x") or 0),
+                "y": int(node.get("y") or 0),
+            }
+        )
+
+    missing = [card for card in cards if str(card.get("id")) not in seen]
+    if missing:
+        max_y = max((node.get("y", 0) for node in nodes), default=0)
+        for index, card in enumerate(missing):
+            nodes.append(
+                {
+                    "id": str(card["id"]),
+                    "x": MINDMAP_PADDING_X,
+                    "y": max_y + MINDMAP_STEP_Y + index * MINDMAP_STEP_Y,
+                }
+            )
+
+    edges: list[dict[str, Any]] = []
+    for index, edge in enumerate(layout.get("edges") or []):
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if not source or not target:
+            continue
+        if source not in card_ids or target not in card_ids:
+            continue
+        edges.append(
+            {
+                "id": str(edge.get("id") or f"edge-{source}-{target}-{index}"),
+                "source": source,
+                "target": target,
+                "label": str(edge.get("label") or "").strip(),
+                "sourceHandle": str(edge.get("sourceHandle") or "").strip(),
+                "targetHandle": str(edge.get("targetHandle") or "").strip(),
+            }
+        )
+
+    return {"engine": MINDMAP_ENGINE, "nodes": nodes, "edges": edges}
+
+
 def append_layout_item(
-    layout: list[dict[str, Any]] | None, card: dict[str, Any]
-) -> list[dict[str, Any]]:
+    layout: list[dict[str, Any]] | dict[str, Any] | None, card: dict[str, Any]
+) -> list[dict[str, Any]] | dict[str, Any]:
+    if is_mindmap_layout(layout):
+        base = ensure_mindmap_layout_for_cards(layout, [])
+        nodes = list(base.get("nodes") or [])
+        max_y = max((node.get("y", 0) for node in nodes), default=0)
+        nodes.append(
+            {
+                "id": card["id"],
+                "x": MINDMAP_PADDING_X,
+                "y": max_y + MINDMAP_STEP_Y,
+            }
+        )
+        return {
+            "engine": MINDMAP_ENGINE,
+            "nodes": nodes,
+            "edges": list(base.get("edges") or []),
+        }
+
     dims = card_grid_dimensions(card)
     base_layout = list(layout or [])
     max_y = max((item.get("y", 0) + item.get("h", 0)) for item in base_layout) if base_layout else 0
@@ -365,6 +494,43 @@ def append_layout_item(
         }
     )
     return base_layout
+
+
+def remove_card_from_grid(
+    cards: list[dict[str, Any]],
+    layout: list[dict[str, Any]] | dict[str, Any] | None,
+    card_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | dict[str, Any]]:
+    card_key = str(card_id or "").strip()
+    if not card_key:
+        raise ValueError("카드 ID가 필요합니다.")
+
+    next_cards = [card for card in cards if str(card.get("id")) != card_key]
+    if len(next_cards) == len(cards):
+        raise ValueError("카드를 찾을 수 없습니다.")
+
+    if is_mindmap_layout(layout):
+        base = layout or {"engine": MINDMAP_ENGINE, "nodes": [], "edges": []}
+        next_nodes = [
+            node
+            for node in (base.get("nodes") or [])
+            if str(node.get("id")) != card_key
+        ]
+        next_edges = [
+            edge
+            for edge in (base.get("edges") or [])
+            if str(edge.get("source")) != card_key and str(edge.get("target")) != card_key
+        ]
+        return next_cards, {
+            "engine": MINDMAP_ENGINE,
+            "nodes": next_nodes,
+            "edges": next_edges,
+        }
+
+    next_layout = [
+        item for item in (layout or []) if str(item.get("i")) != card_key
+    ]
+    return next_cards, next_layout
 
 
 def add_card_from_source(
