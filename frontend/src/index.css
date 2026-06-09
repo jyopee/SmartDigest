@@ -22,63 +22,255 @@ textarea {
 }
 
 .auth-page {
+  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 32px 24px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 80% 55% at 12% 8%, rgba(59, 130, 246, 0.22), transparent 58%),
+    radial-gradient(ellipse 70% 50% at 88% 92%, rgba(99, 102, 241, 0.16), transparent 55%),
+    linear-gradient(155deg, #070b12 0%, #0c1220 42%, #111827 100%);
+}
+
+.auth-page::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 85% 75% at 50% 45%, #000 20%, transparent 78%);
+  pointer-events: none;
 }
 
 .auth-card {
-  width: min(420px, 100%);
-  background: #fff;
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  position: relative;
+  z-index: 1;
+  width: min(440px, 100%);
+  padding: 36px 34px 30px;
+  border-radius: 22px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+    0 28px 80px rgba(0, 0, 0, 0.45),
+    0 8px 24px rgba(15, 23, 42, 0.35);
 }
 
-.auth-card h1 {
-  margin: 0 0 4px;
+.auth-card-glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(96, 165, 250, 0.35),
+    transparent 42%,
+    transparent 58%,
+    rgba(129, 140, 248, 0.28)
+  );
+  opacity: 0.55;
+  pointer-events: none;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  padding: 1px;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+.auth-brand-mark {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #eff6ff;
+  background: linear-gradient(145deg, #2563eb 0%, #4f46e5 100%);
+  box-shadow:
+    0 10px 24px rgba(37, 99, 235, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+.auth-brand-copy h1 {
+  margin: 0;
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #f8fafc;
 }
 
 .auth-subtitle {
-  margin: 0 0 24px;
-  color: #64748b;
+  margin: 4px 0 0;
+  color: #94a3b8;
+  font-size: 0.92rem;
+  letter-spacing: 0.01em;
 }
 
 .auth-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-bottom: 20px;
+  gap: 6px;
+  margin-bottom: 24px;
+  padding: 5px;
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.55);
+  border: 1px solid rgba(51, 65, 85, 0.65);
 }
 
 .auth-tabs button {
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
-  border-radius: 999px;
-  padding: 10px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  padding: 11px 12px;
   cursor: pointer;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #94a3b8;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.auth-tabs button:hover:not(.active) {
+  color: #cbd5e1;
+  background: rgba(30, 41, 59, 0.55);
 }
 
 .auth-tabs button.active {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #fff;
+  color: #f8fafc;
+  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+  box-shadow:
+    0 8px 20px rgba(37, 99, 235, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.1) inset;
 }
 
 .auth-form {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
-.auth-form label {
+.auth-field {
   display: grid;
-  gap: 6px;
-  font-size: 14px;
-  color: #475569;
+  gap: 8px;
 }
 
-.auth-form input,
+.auth-field-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #94a3b8;
+}
+
+.auth-form input {
+  width: 100%;
+  border: 1px solid rgba(71, 85, 105, 0.75);
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: #f1f5f9;
+  background: rgba(2, 6, 23, 0.55);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.28);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+}
+
+.auth-form input::placeholder {
+  color: #64748b;
+}
+
+.auth-form input:hover {
+  border-color: rgba(100, 116, 139, 0.9);
+}
+
+.auth-form input:focus {
+  outline: none;
+  border-color: #60a5fa;
+  background: rgba(15, 23, 42, 0.85);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.2),
+    0 0 0 3px rgba(59, 130, 246, 0.22);
+}
+
+.auth-feedback {
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+}
+
+.auth-form .form-error.auth-feedback {
+  background: rgba(127, 29, 29, 0.22);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
+.auth-form .form-success.auth-feedback {
+  background: rgba(6, 78, 59, 0.22);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+
+.auth-submit {
+  margin-top: 4px;
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  padding: 13px 16px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #fff;
+  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 48%, #1d4ed8 100%);
+  box-shadow:
+    0 14px 28px rgba(37, 99, 235, 0.32),
+    0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
+}
+
+.auth-submit:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow:
+    0 18px 34px rgba(37, 99, 235, 0.38),
+    0 0 0 1px rgba(255, 255, 255, 0.14) inset;
+}
+
+.auth-submit:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.auth-submit:disabled {
+  opacity: 0.72;
+  cursor: wait;
+}
+
+.auth-footnote {
+  margin: 22px 0 0;
+  padding-top: 18px;
+  border-top: 1px solid rgba(51, 65, 85, 0.55);
+  color: #64748b;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  text-align: center;
+}
+
 .search-input {
   width: 100%;
   border: 1px solid #cbd5e1;
@@ -86,7 +278,6 @@ textarea {
   padding: 10px 12px;
 }
 
-.auth-form button,
 .upload-panel button,
 .modal-actions button,
 .digest-actions button,

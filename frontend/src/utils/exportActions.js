@@ -109,6 +109,14 @@ export function buildNotesShareText(notes, filename) {
   };
 }
 
+export function buildPageShareText(content, filename, pageNumber) {
+  const base = filename || "SmartDigest";
+  return {
+    title: `${base} — 페이지 ${pageNumber}`,
+    text: (content || "").trim() || "내용이 없습니다.",
+  };
+}
+
 export function buildChatsShareText(chats, filename) {
   const body = (chats || [])
     .map(

@@ -3,33 +3,41 @@ import AccordionBox from "./AccordionBox";
 import FileUpload from "./FileUpload";
 
 export default function KnowledgeUploadAccordion({
-  userId,
   usage,
-  onUsageRefresh,
-  onQuotaExhausted,
-  onUploaded,
+  summaryStatus,
+  isSummarizing,
+  onSummarize,
 }) {
   const [isUploadExpanded, setIsUploadExpanded] = useState(false);
 
-  const handleUploadStarted = () => {
+  const handleSummarize = async (file) => {
+    setIsUploadExpanded(true);
+    await onSummarize(file);
     setIsUploadExpanded(false);
   };
 
   return (
     <AccordionBox
       title="새로운 지식 추가"
-      expanded={isUploadExpanded}
-      onExpandedChange={setIsUploadExpanded}
-      className="knowledge-upload-accordion"
+      expanded={isUploadExpanded || isSummarizing}
+      disableToggle={isSummarizing}
+      onExpandedChange={(next) => {
+        if (isSummarizing) return;
+        setIsUploadExpanded(next);
+      }}
+      className={`knowledge-upload-accordion${
+        isSummarizing ? " knowledge-upload-accordion--loading" : ""
+      }`}
     >
       <FileUpload
-        userId={userId}
         usage={usage}
         embedded
-        onUsageRefresh={onUsageRefresh}
-        onQuotaExhausted={onQuotaExhausted}
-        onUploaded={onUploaded}
-        onUploadStarted={handleUploadStarted}
+        isRunning={isSummarizing}
+        progress={summaryStatus.progress}
+        message={summaryStatus.message}
+        error={summaryStatus.error}
+        phase={summaryStatus.phase}
+        onSummarize={handleSummarize}
       />
     </AccordionBox>
   );

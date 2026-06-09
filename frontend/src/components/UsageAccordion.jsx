@@ -1,20 +1,20 @@
 import { getQuotaStats } from "../api/usageService";
 import AccordionBox from "./AccordionBox";
 
-function QuotaProgressLine({ remainingPercent, isLimitReached, thin = false }) {
+function QuotaProgressLine({ usedPercent, isLimitReached, thin = false }) {
   return (
     <div
       className={`quota-progress-bar${thin ? " quota-progress-bar--thin" : ""}${
         isLimitReached ? " exhausted" : ""
       }`}
       role="progressbar"
-      aria-valuenow={remainingPercent}
+      aria-valuenow={usedPercent}
       aria-valuemin={0}
       aria-valuemax={100}
     >
       <div
         className="quota-progress-fill"
-        style={{ width: `${remainingPercent}%` }}
+        style={{ width: `${usedPercent}%` }}
       />
     </div>
   );
@@ -27,7 +27,7 @@ export default function UsageAccordion({ usage }) {
     limit,
     usedCount,
     remaining,
-    remainingPercent,
+    percent: usedPercent,
     isLimitReached,
   } = getQuotaStats(usage);
 
@@ -38,6 +38,7 @@ export default function UsageAccordion({ usage }) {
       }`}
       title={`남은 ${remaining}회 / 최대 ${limit}회`}
     >
+      <span className="accordion-box-trailing-prefix">남음</span>
       {remaining}
       <span className="accordion-box-trailing-sep">/</span>
       {limit}
@@ -46,7 +47,7 @@ export default function UsageAccordion({ usage }) {
 
   return (
     <AccordionBox
-      title="오늘의 요약 사용량"
+      title="오늘 남은 API 호출"
       defaultExpanded={isLimitReached}
       autoExpand={isLimitReached}
       variant={isLimitReached ? "warning" : "default"}
@@ -55,7 +56,7 @@ export default function UsageAccordion({ usage }) {
       collapsedPreview={
         !isLimitReached ? (
           <QuotaProgressLine
-            remainingPercent={remainingPercent}
+            usedPercent={usedPercent}
             isLimitReached={isLimitReached}
             thin
           />
@@ -70,7 +71,7 @@ export default function UsageAccordion({ usage }) {
             : `오늘 ${usedCount}회 사용 · 남은 ${remaining}회`}
         </p>
         <QuotaProgressLine
-          remainingPercent={remainingPercent}
+          usedPercent={usedPercent}
           isLimitReached={isLimitReached}
         />
         {isLimitReached && (

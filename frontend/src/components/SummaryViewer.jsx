@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useViewerInteraction } from "../contexts/ViewerInteractionContext";
 import { useInView } from "react-intersection-observer";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,6 +13,7 @@ import {
   setActiveSearchHit,
   stripDecorativeMarkup,
 } from "../utils/highlightUtils";
+import { readerAlignClass } from "../constants/readerAlign";
 
 function getPageNumberFromNode(node) {
   const section = node?.closest?.("[data-page-number]");
@@ -26,7 +28,7 @@ function waitForPaint() {
   });
 }
 
-export default function SummaryViewer({
+function SummaryViewer({
   digestId,
   annotations,
   searchOpen = false,
@@ -35,7 +37,13 @@ export default function SummaryViewer({
   onLoadedPagesChange,
   onRequestAnnotation,
   onHighlightClick,
+  textAlign = "left",
 }) {
+  const viewerInteraction = useViewerInteraction();
+  const requestAnnotation =
+    onRequestAnnotation ?? viewerInteraction.onRequestAnnotation;
+  const highlightClickHandler =
+    onHighlightClick ?? viewerInteraction.onHighlightClick;
   const containerRef = useRef(null);
   const searchHitsRef = useRef([]);
   const searchActiveIndexRef = useRef(0);
@@ -284,7 +292,7 @@ export default function SummaryViewer({
     if (!container.contains(range.commonAncestorContainer)) return;
 
     const pageNumber = getPageNumberFromNode(range.commonAncestorContainer);
-    onRequestAnnotation?.({
+    requestAnnotation?.({
       x: event.clientX,
       y: event.clientY,
       selectedText,
@@ -307,7 +315,7 @@ export default function SummaryViewer({
     if (!annotation) return;
 
     const rect = highlight.getBoundingClientRect();
-    onHighlightClick?.({
+    highlightClickHandler?.({
       annotation,
       x: rect.left + rect.width / 2,
       y: rect.bottom,
@@ -356,7 +364,7 @@ export default function SummaryViewer({
 
       <div
         ref={containerRef}
-        className="document-body summary-scroll-body"
+        className={`document-body summary-scroll-body reader-prose ${readerAlignClass(textAlign)}`}
         onMouseUp={handleDocumentMouseUp}
         onClick={handleHighlightClick}
       >
@@ -398,3 +406,5 @@ export default function SummaryViewer({
     </div>
   );
 }
+
+export default memo(SummaryViewer);

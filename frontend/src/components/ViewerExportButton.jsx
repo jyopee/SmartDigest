@@ -2,7 +2,11 @@ import { useState } from "react";
 import ExportIcon from "./ExportIcon";
 import ExportMenu from "./ExportMenu";
 
-export default function ViewerExportButton({ onExportSelect, busy = false }) {
+export default function ViewerExportButton({
+  onExportSelect,
+  busy = false,
+  includeMarkdown = false,
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const handleSelect = (action) => {
@@ -31,6 +35,7 @@ export default function ViewerExportButton({ onExportSelect, busy = false }) {
         onSelect={handleSelect}
         anchor="header"
         busy={busy}
+        includeMarkdown={includeMarkdown}
       />
     </div>
   );

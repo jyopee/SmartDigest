@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
-const MENU_ITEMS = [
+const BASE_MENU_ITEMS = [
   { id: "image", label: "이미지 저장" },
   { id: "pdf", label: "PDF 저장" },
   { id: "share", label: "공유하기" },
 ];
+
+const MARKDOWN_MENU_ITEM = { id: "markdown", label: "마크다운 저장" };
 
 export default function ExportMenu({
   open,
@@ -13,7 +15,11 @@ export default function ExportMenu({
   onSelect,
   anchor = "fab",
   busy = false,
+  includeMarkdown = false,
 }) {
+  const menuItems = includeMarkdown
+    ? [...BASE_MENU_ITEMS, MARKDOWN_MENU_ITEM]
+    : BASE_MENU_ITEMS;
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -49,7 +55,7 @@ export default function ExportMenu({
           role="menu"
           aria-label="보내기 옵션"
         >
-          {MENU_ITEMS.map((item) => (
+          {menuItems.map((item) => (
             <button
               key={item.id}
               type="button"

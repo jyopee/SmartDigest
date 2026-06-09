@@ -1,17 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeRaw from "rehype-raw";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useViewerInteraction } from "../contexts/ViewerInteractionContext";
 import SummarySearchBar from "./SummarySearchBar";
 import LoadingSpinner from "./LoadingSpinner";
 import { fetchPageContent } from "../api";
-import {
-  applyAnnotationHighlights,
-  applySearchHighlightsToMarkup,
-  buildCrossPageSearchIndex,
-  stripDecorativeMarkup,
-} from "../utils/highlightUtils";
+import { buildCrossPageSearchIndex } from "../utils/highlightUtils";
 import { focusDocumentSource } from "../utils/sourceNavigation";
+import {
+  buildLinePages,
+  normalizeLineSplitPoints,
+  resolveEffectiveSplitPoints,
+  splitContentIntoLines,
+} from "../utils/pageSplitUtils";
+import {
+  loadPageSplitState,
+  runSplitStorageMigration,
+  savePageSplitState,
+} from "../utils/pageSplitStorage";
+import SplittableMarkdownBody from "./SplittableMarkdownBody";
+import Toast, { useToast } from "./Toast";
+import { readerAlignClass } from "../constants/readerAlign";
 
 function waitForPaint() {
   return new Promise((resolve) => {
@@ -21,7 +36,7 @@ function waitForPaint() {
   });
 }
 
-export default function PageViewer({
+function PageViewer({
   digestId,
   pageNumber,
   totalPages,
@@ -30,13 +45,21 @@ export default function PageViewer({
   onSearchClose,
   onPageChange,
   onContentChange,
+  onVirtualNavChange,
+  onVirtualNavSetter,
   saveVersion = 0,
   isEditing = false,
   onEditingChange,
   onRequestAnnotation,
   onHighlightClick,
   sourceFocus = null,
+  textAlign = "left",
 }) {
+  const viewerInteraction = useViewerInteraction();
+  const requestAnnotation =
+    onRequestAnnotation ?? viewerInteraction.onRequestAnnotation;
+  const highlightClickHandler =
+    onHighlightClick ?? viewerInteraction.onHighlightClick;
   const containerRef = useRef(null);
   const editorRef = useRef(null);
   const searchActiveIndexRef = useRef(0);
@@ -56,6 +79,12 @@ export default function PageViewer({
   const [searchActiveIndex, setSearchActiveIndex] = useState(0);
   const [searchResults, setSearchResults] = useState([]);
   const [searchScanning, setSearchScanning] = useState(false);
+  const [splitState, setSplitState] = useState({
+    isCustomized: false,
+    customSplitPoints: [],
+  });
+  const [virtualSubPage, setVirtualSubPage] = useState(1);
+  const { message: toastMessage, showToast } = useToast();
 
   const clearSearch = useCallback(() => {
     setSearchQuery("");
@@ -79,17 +108,66 @@ export default function PageViewer({
     return hit.localIndex;
   }, [searchResults, searchActiveIndex, pageNumber, searchQuery]);
 
-  const renderedContent = useMemo(() => {
-    const annotated = applyAnnotationHighlights(
-      stripDecorativeMarkup(content),
-      pageAnnotations
-    );
-    return applySearchHighlightsToMarkup(
-      annotated,
-      searchQuery,
-      activeLocalIndex
-    );
-  }, [content, pageAnnotations, searchQuery, activeLocalIndex]);
+  const lines = useMemo(() => splitContentIntoLines(content), [content]);
+
+  const effectiveSplitPoints = useMemo(
+    () => resolveEffectiveSplitPoints(content, lines, splitState),
+    [content, lines, splitState]
+  );
+
+  const virtualTotal = useMemo(() => {
+    const pages = buildLinePages(lines, effectiveSplitPoints);
+    return pages.length || 1;
+  }, [lines, effectiveSplitPoints]);
+
+  const handleSplitPointsChange = useCallback(
+    (nextPoints, { manual = false } = {}) => {
+      const normalized = normalizeLineSplitPoints(nextPoints, lines.length);
+      const prevTotal =
+        buildLinePages(lines, effectiveSplitPoints).length || 1;
+      const nextTotal = buildLinePages(lines, normalized).length || 1;
+
+      const nextState = manual
+        ? { isCustomized: true, customSplitPoints: normalized }
+        : splitState;
+
+      if (manual) {
+        setSplitState(nextState);
+        savePageSplitState(digestId, pageNumber, nextState);
+        showToast("사용자 정의 페이지 분할이 적용되었습니다");
+      }
+
+      setVirtualSubPage((prev) => {
+        if (nextTotal > prevTotal) return Math.min(prev, nextTotal);
+        if (prev > nextTotal) return nextTotal;
+        return prev;
+      });
+    },
+    [digestId, pageNumber, lines, effectiveSplitPoints, splitState, showToast]
+  );
+
+  useEffect(() => {
+    setVirtualSubPage(1);
+  }, [digestId, pageNumber]);
+
+  useEffect(() => {
+    if (virtualSubPage > virtualTotal) {
+      setVirtualSubPage(virtualTotal);
+    }
+  }, [virtualSubPage, virtualTotal]);
+
+  useEffect(() => {
+    onVirtualNavSetter?.(setVirtualSubPage);
+    return () => onVirtualNavSetter?.(null);
+  }, [onVirtualNavSetter]);
+
+  useEffect(() => {
+    onVirtualNavChange?.({
+      current: virtualSubPage,
+      total: virtualTotal,
+      active: virtualTotal > 1,
+    });
+  }, [virtualSubPage, virtualTotal, onVirtualNavChange]);
 
   const goToGlobalSearchIndex = useCallback(
     (globalIndex) => {
@@ -122,23 +200,32 @@ export default function PageViewer({
   }, [digestId]);
 
   useEffect(() => {
+    runSplitStorageMigration();
+  }, []);
+
+  useEffect(() => {
     if (!digestId) return;
 
     onEditingChange?.(false);
     prevSaveVersionRef.current = 0;
     setLoading(true);
+
     fetchPageContent(digestId, pageNumber)
       .then((data) => {
         const nextContent = data.content || "";
+        const stored = loadPageSplitState(digestId, pageNumber);
+
         savedContentRef.current = nextContent;
         setContent(nextContent);
+        setSplitState(stored);
       })
       .catch(() => {
         savedContentRef.current = "";
         setContent("");
+        setSplitState({ isCustomized: false, customSplitPoints: [] });
       })
-      .finally(() => setLoading(false));
-  }, [digestId, pageNumber]);
+      .finally(() => startTransition(() => setLoading(false)));
+  }, [digestId, pageNumber, onEditingChange]);
 
   useEffect(() => {
     onContentChange?.({
@@ -151,8 +238,51 @@ export default function PageViewer({
     if (saveVersion <= prevSaveVersionRef.current) return;
     prevSaveVersionRef.current = saveVersion;
     savedContentRef.current = content;
+
+    if (splitState.isCustomized) {
+      const normalized = normalizeLineSplitPoints(
+        splitState.customSplitPoints,
+        lines.length
+      );
+      const nextState = {
+        isCustomized: true,
+        customSplitPoints: normalized,
+      };
+      setSplitState(nextState);
+      savePageSplitState(digestId, pageNumber, nextState);
+    }
+
     onContentChange?.({ content, isDirty: false });
-  }, [saveVersion, content, onContentChange]);
+  }, [
+    saveVersion,
+    content,
+    onContentChange,
+    splitState,
+    lines.length,
+    digestId,
+    pageNumber,
+  ]);
+
+  useEffect(() => {
+    setSplitState((prev) => {
+      if (!prev.isCustomized) return prev;
+
+      const normalized = normalizeLineSplitPoints(
+        prev.customSplitPoints,
+        lines.length
+      );
+      const unchanged =
+        normalized.length === prev.customSplitPoints.length &&
+        normalized.every(
+          (point, index) => point === prev.customSplitPoints[index]
+        );
+      if (unchanged) return prev;
+
+      const nextState = { isCustomized: true, customSplitPoints: normalized };
+      savePageSplitState(digestId, pageNumber, nextState);
+      return nextState;
+    });
+  }, [lines.length, digestId, pageNumber]);
 
   useEffect(() => {
     if (!digestId || !searchQuery.trim()) {
@@ -200,7 +330,7 @@ export default function PageViewer({
       );
       target?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
-  }, [loading, pageNumber, activeLocalIndex, renderedContent]);
+  }, [loading, pageNumber, activeLocalIndex, content, effectiveSplitPoints, searchQuery, virtualSubPage]);
 
   useEffect(() => {
     if (!sourceFocus || loading) return;
@@ -209,28 +339,31 @@ export default function PageViewer({
     waitForPaint().then(() => {
       focusDocumentSource(containerRef.current, sourceFocus);
     });
-  }, [sourceFocus, pageNumber, loading, renderedContent]);
+  }, [sourceFocus, pageNumber, loading, content, effectiveSplitPoints, virtualSubPage]);
 
-  const handleDocumentMouseUp = (event) => {
-    if (event.target.closest(".sd-highlight, .sd-search-hit")) return;
+  const handleDocumentMouseUp = useCallback(
+    (event) => {
+      if (event.target.closest(".sd-highlight, .sd-search-hit")) return;
 
-    const selection = window.getSelection();
-    const selectedText = selection?.toString().trim() || "";
-    if (!selectedText || selectedText.length < 2) return;
+      const selection = window.getSelection();
+      const selectedText = selection?.toString().trim() || "";
+      if (!selectedText || selectedText.length < 2) return;
 
-    const container = containerRef.current;
-    if (!container || !selection.rangeCount) return;
+      const container = containerRef.current;
+      if (!container || !selection.rangeCount) return;
 
-    const range = selection.getRangeAt(0);
-    if (!container.contains(range.commonAncestorContainer)) return;
+      const range = selection.getRangeAt(0);
+      if (!container.contains(range.commonAncestorContainer)) return;
 
-    onRequestAnnotation?.({
-      x: event.clientX,
-      y: event.clientY,
-      selectedText,
-      pageNumber,
-    });
-  };
+      requestAnnotation?.({
+        x: event.clientX,
+        y: event.clientY,
+        selectedText,
+        pageNumber,
+      });
+    },
+    [pageNumber, requestAnnotation]
+  );
 
   useEffect(() => {
     if (wasEditingRef.current && !isEditing && editorRef.current) {
@@ -250,25 +383,28 @@ export default function PageViewer({
     setContent(editorRef.current.innerText);
   };
 
-  const handleHighlightClick = (event) => {
-    const highlight = event.target.closest(".sd-highlight");
-    if (!highlight) return;
+  const handleHighlightClick = useCallback(
+    (event) => {
+      const highlight = event.target.closest(".sd-highlight");
+      if (!highlight) return;
 
-    event.preventDefault();
-    event.stopPropagation();
-    window.getSelection()?.removeAllRanges();
+      event.preventDefault();
+      event.stopPropagation();
+      window.getSelection()?.removeAllRanges();
 
-    const annotationId = Number(highlight.dataset.id);
-    const annotation = pageAnnotations.find((ann) => ann.id === annotationId);
-    if (!annotation) return;
+      const annotationId = Number(highlight.dataset.id);
+      const annotation = pageAnnotations.find((ann) => ann.id === annotationId);
+      if (!annotation) return;
 
-    const rect = highlight.getBoundingClientRect();
-    onHighlightClick?.({
-      annotation,
-      x: rect.left + rect.width / 2,
-      y: rect.bottom,
-    });
-  };
+      const rect = highlight.getBoundingClientRect();
+      highlightClickHandler?.({
+        annotation,
+        x: rect.left + rect.width / 2,
+        y: rect.bottom,
+      });
+    },
+    [highlightClickHandler, pageAnnotations]
+  );
 
   return (
     <div className="summary-viewer">
@@ -312,7 +448,9 @@ export default function PageViewer({
 
         <div
           ref={containerRef}
-          className={`document-body${isEditing ? " is-editing" : ""}`}
+          className={`document-body reader-prose ${readerAlignClass(textAlign)}${
+            isEditing ? " is-editing" : ""
+          }`}
           data-page-number={pageNumber}
           onMouseUp={isEditing ? undefined : handleDocumentMouseUp}
           onClick={isEditing ? undefined : handleHighlightClick}
@@ -329,16 +467,25 @@ export default function PageViewer({
               aria-label="요약 내용 편집"
             />
           ) : (
-            <ReactMarkdown
-              key={`page-${pageNumber}`}
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeRaw]}
-            >
-              {renderedContent}
-            </ReactMarkdown>
+            <SplittableMarkdownBody
+              key={`page-${pageNumber}-${virtualSubPage}`}
+              content={content}
+              splitPoints={effectiveSplitPoints}
+              activeVirtualPage={virtualSubPage}
+              onSplitPointsChange={handleSplitPointsChange}
+              annotations={pageAnnotations}
+              searchQuery={searchQuery}
+              activeLocalIndex={activeLocalIndex}
+              onLineMouseUp={handleDocumentMouseUp}
+              onHighlightClick={handleHighlightClick}
+            />
           )}
         </div>
       </div>
+
+      <Toast message={toastMessage} />
     </div>
   );
 }
+
+export default memo(PageViewer);

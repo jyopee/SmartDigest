@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { askChat, deleteChat } from "../api/chatService";
+import { isRateLimitError } from "../api/usageService";
 import { setDragPayload } from "../utils/dragPayload";
 
 function truncate(text, max = 60) {
@@ -9,8 +10,11 @@ function truncate(text, max = 60) {
 
 export default function QuestionList({
   digestId,
+  userId,
   chats,
   onChange,
+  onUsageRefresh,
+  onQuotaExhausted,
   showPageBadge = false,
   draft = null,
   onDraftConsumed,
@@ -20,6 +24,7 @@ export default function QuestionList({
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [sourcesOpenId, setSourcesOpenId] = useState(null);
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -40,13 +45,18 @@ export default function QuestionList({
         digestId,
         trimmed,
         draft?.selectedText || "",
-        draft?.pageNumber || 1
+        draft?.pageNumber || 1,
+        userId
       );
       onChange(result.chats);
       setQuestion("");
       setExpandedId(result.chat?.id ?? null);
       onDraftConsumed?.();
+      onUsageRefresh?.();
     } catch (err) {
+      if (isRateLimitError(err)) {
+        await onQuotaExhausted?.();
+      }
       alert(err.message);
     } finally {
       setAsking(false);
@@ -59,6 +69,7 @@ export default function QuestionList({
       const result = await deleteChat(chat.id);
       onChange(result.chats);
       if (expandedId === chat.id) setExpandedId(null);
+      if (sourcesOpenId === chat.id) setSourcesOpenId(null);
     } catch (err) {
       alert(err.message);
     }
@@ -143,7 +154,41 @@ export default function QuestionList({
 
                 {expanded && (
                   <div className="question-answer-block">
-                    <p className="question-answer-label">AI 답변</p>
+                    <div className="question-answer-header">
+                      <p className="question-answer-label">AI 답변</p>
+                      {chat.is_verified && chat.sources?.length > 0 && (
+                        <div className="chat-verified-wrap">
+                          <button
+                            type="button"
+                            className="chat-verified-badge"
+                            aria-expanded={sourcesOpenId === chat.id}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSourcesOpenId(
+                                sourcesOpenId === chat.id ? null : chat.id
+                              );
+                            }}
+                          >
+                            검증됨
+                          </button>
+                          {sourcesOpenId === chat.id && (
+                            <ul className="chat-source-list">
+                              {chat.sources.map((source) => (
+                                <li key={source.url}>
+                                  <a
+                                    href={source.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    {source.title || source.url}
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     <p className="question-answer">{chat.answer}</p>
                   </div>
                 )}

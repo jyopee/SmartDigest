@@ -1,4 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+
+const SEARCH_ANCHOR_ID = "viewer-search-anchor";
+
+function getSearchAnchor() {
+  return document.getElementById(SEARCH_ANCHOR_ID);
+}
 
 export default function SummarySearchBar({
   query,
@@ -11,10 +18,15 @@ export default function SummarySearchBar({
   onClose,
 }) {
   const inputRef = useRef(null);
+  const [anchor, setAnchor] = useState(() => getSearchAnchor());
 
   const hasQuery = query.trim().length > 0;
   const hasMatches = matchCount > 0;
   const displayIndex = hasMatches ? activeIndex + 1 : 0;
+
+  useEffect(() => {
+    setAnchor(getSearchAnchor());
+  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -25,8 +37,8 @@ export default function SummarySearchBar({
     onClose?.();
   };
 
-  return (
-    <div className="summary-search-bar">
+  const bar = (
+    <div className="summary-search-bar summary-search-bar--pinned">
       <div className="summary-search-input-wrap">
         <input
           ref={inputRef}
@@ -85,4 +97,10 @@ export default function SummarySearchBar({
       </button>
     </div>
   );
+
+  if (anchor) {
+    return createPortal(bar, anchor);
+  }
+
+  return bar;
 }

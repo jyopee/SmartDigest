@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import LoginForm from "./components/LoginForm";
 import DigestList from "./components/DigestList";
 import KnowledgeUploadAccordion from "./components/KnowledgeUploadAccordion";
@@ -6,21 +14,28 @@ import SelectionActionPopup from "./components/SelectionActionPopup";
 import NoteList from "./components/NoteList";
 import QuestionList from "./components/QuestionList";
 import NotePopup from "./components/NotePopup";
-import PageViewToolbar from "./components/PageViewToolbar";
+import NoteComposePopup from "./components/NoteComposePopup";
+import SidebarToggle from "./components/SidebarToggle";
 import PageMiniFooter from "./components/PageMiniFooter";
 import ViewerExportButton from "./components/ViewerExportButton";
 import TabExportButton from "./components/TabExportButton";
-import SummaryViewer from "./components/SummaryViewer";
-import LayoutViewer from "./components/LayoutViewer";
+import LoadingSpinner from "./components/LoadingSpinner";
+import { ViewerInteractionProvider } from "./contexts/ViewerInteractionContext";
 import LayoutTabPopover from "./components/LayoutTabPopover";
+import ReaderAlignToolbar from "./components/ReaderAlignToolbar";
+import PageViewToolbar from "./components/PageViewToolbar";
 import {
   LAYOUT_MODES,
   loadLayoutMode,
   saveLayoutMode,
 } from "./constants/layoutModes";
-import PageViewer from "./components/PageViewer";
+import {
+  loadReaderAlign,
+  saveReaderAlign,
+} from "./constants/readerAlign";
 import SearchIcon from "./components/SearchIcon";
 import UsageAccordion from "./components/UsageAccordion";
+import useSummaryJob from "./hooks/useSummaryJob";
 import {
   fetchDigests,
   fetchNotes,
@@ -32,21 +47,24 @@ import {
   clearUsageStorage,
   fetchPageMeta,
   savePageContent,
+  fetchPageExport,
+  downloadMarkdownFile,
 } from "./api";
 import { addGridCardFromSource } from "./api/gridLayoutService";
-import {
-  buildSourceFocusFromCard,
-  buildSourceFocusFromChat,
-  buildSourceFocusFromNote,
-} from "./utils/sourceNavigation";
+import { buildSourceFocusFromCard } from "./utils/sourceNavigation";
 import {
   buildChatsShareText,
   buildNotesShareText,
+  buildPageShareText,
   exportElementAsImage,
   exportElementAsPdf,
   shareExportContent,
 } from "./utils/exportActions";
 import "./App.css";
+
+const SummaryViewer = lazy(() => import("./components/SummaryViewer"));
+const LayoutViewer = lazy(() => import("./components/LayoutViewer"));
+const PageViewer = lazy(() => import("./components/PageViewer"));
 
 const TABS = {
   FULL_VIEW: "full",
@@ -79,6 +97,7 @@ export default function App() {
   const [chats, setChats] = useState([]);
   const [selectionPopup, setSelectionPopup] = useState(null);
   const [noteDraft, setNoteDraft] = useState(null);
+  const [noteCompose, setNoteCompose] = useState(null);
   const [chatDraft, setChatDraft] = useState(null);
   const [chatReturnTab, setChatReturnTab] = useState(null);
   const [noteSaving, setNoteSaving] = useState(false);
@@ -94,13 +113,24 @@ export default function App() {
   const [pageSaveVersion, setPageSaveVersion] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [pageEditing, setPageEditing] = useState(false);
+  const virtualPageSetterRef = useRef(null);
+  const [virtualPageNav, setVirtualPageNav] = useState({
+    current: 1,
+    total: 1,
+    active: false,
+  });
   const [currentLayout, setCurrentLayout] = useState(LAYOUT_MODES.GRID);
+  const [readerAlign, setReaderAlign] = useState("left");
   const [layoutGridReloadToken, setLayoutGridReloadToken] = useState(0);
   const [addingToLayoutKey, setAddingToLayoutKey] = useState(null);
   const [sourceFocus, setSourceFocus] = useState(null);
   const [exportBusy, setExportBusy] = useState(false);
   const exportTargetRef = useRef(null);
   const [usage, setUsage] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    const saved = localStorage.getItem("smartdigest_sidebar_open");
+    return saved !== "false";
+  });
 
   const selectedDigest = digests.find((d) => d.id === selectedId);
   const highlightAnnotations = useMemo(() => notesForHighlights(notes), [notes]);
@@ -115,6 +145,9 @@ export default function App() {
     return chats.filter((chat) => (chat.page_number || 1) === currentPage);
   }, [chats, currentPage, filterCurrentPageOnly]);
 
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+
   const loadDigests = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
@@ -122,7 +155,10 @@ export default function App() {
     try {
       const data = await fetchDigests(userId, search);
       setDigests(data);
-      if (selectedId && !data.some((d) => d.id === selectedId)) {
+      if (
+        selectedIdRef.current &&
+        !data.some((d) => d.id === selectedIdRef.current)
+      ) {
         setSelectedId(null);
       }
     } catch (err) {
@@ -130,7 +166,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [userId, search, selectedId]);
+  }, [userId, search]);
 
   const loadNotes = useCallback(async () => {
     if (!selectedDigest?.id) {
@@ -168,6 +204,19 @@ export default function App() {
     const exhausted = await applyQuotaExhausted(userId);
     setUsage(exhausted);
   }, [userId]);
+
+  const handleDigestUploaded = useCallback((digestId) => {
+    loadDigests();
+    setSelectedId(digestId);
+  }, [loadDigests]);
+
+  const { status: summaryStatus, isRunning: isSummarizing, runSummary } =
+    useSummaryJob({
+      userId,
+      onUploaded: handleDigestUploaded,
+      onUsageRefresh: loadUsage,
+      onQuotaExhausted: handleQuotaExhausted,
+    });
 
   const loadChats = useCallback(async () => {
     if (!selectedDigest?.id) {
@@ -210,6 +259,7 @@ export default function App() {
   useEffect(() => {
     setSelectionPopup(null);
     setNoteDraft(null);
+    setNoteCompose(null);
     setChatDraft(null);
     setChatReturnTab(null);
     setActivePopup(null);
@@ -231,13 +281,30 @@ export default function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    if (activeTab !== TABS.PAGE_VIEW) {
+      virtualPageSetterRef.current = null;
+      setVirtualPageNav({
+        current: 1,
+        total: 1,
+        active: false,
+      });
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     setPageEditing(false);
   }, [selectedId, currentPage, activeTab]);
 
   useEffect(() => {
     if (!selectedId) return;
     setCurrentLayout(loadLayoutMode(selectedId));
+    setReaderAlign(loadReaderAlign(selectedId));
   }, [selectedId]);
+
+  const handleReaderAlignChange = (align) => {
+    setReaderAlign(align);
+    if (selectedId) saveReaderAlign(selectedId, align);
+  };
 
   const handleLayoutSelect = (mode) => {
     setCurrentLayout(mode);
@@ -287,31 +354,20 @@ export default function App() {
       const key = `${source}-${sourceId}`;
       setAddingToLayoutKey(key);
       try {
-        const result = await addGridCardFromSource(
-          selectedDigest.id,
-          source,
-          sourceId
-        );
+        await addGridCardFromSource(selectedDigest.id, source, sourceId);
         setLayoutGridReloadToken((prev) => prev + 1);
-
-        const focus =
-          buildSourceFocusFromCard(result.card) ||
-          (source === "note"
-            ? buildSourceFocusFromNote(notes.find((note) => note.id === sourceId))
-            : buildSourceFocusFromChat(chats.find((chat) => chat.id === sourceId)));
-
-        if (focus) handleNavigateToSource(focus);
+        setActiveTab(TABS.LAYOUT_VIEW);
       } catch (err) {
-        alert(err.message);
+        alert(err.message || "학습 카드를 추가하지 못했습니다.");
       } finally {
         setAddingToLayoutKey(null);
       }
     },
-    [selectedDigest?.id, notes, chats, handleNavigateToSource]
+    [selectedDigest?.id]
   );
 
   useEffect(() => {
-    if (!activePopup && !selectionPopup) return;
+    if (!activePopup && !selectionPopup && !noteCompose) return;
     const handleClickOutside = (event) => {
       if (
         event.target.closest(".annotation-popup") ||
@@ -322,10 +378,11 @@ export default function App() {
       }
       setActivePopup(null);
       setSelectionPopup(null);
+      setNoteCompose(null);
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [activePopup, selectionPopup]);
+  }, [activePopup, selectionPopup, noteCompose]);
 
   const handleVisiblePageChange = useCallback((pageNumber) => {
     setCurrentPage(pageNumber);
@@ -340,11 +397,18 @@ export default function App() {
     setPageDraft({ content, isDirty });
   }, []);
 
-  const handlePageChange = (nextPage) => {
-    if (nextPage < 1 || nextPage > totalPages) return;
+  const pageDraftRef = useRef(pageDraft);
+  pageDraftRef.current = pageDraft;
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+  const totalPagesRef = useRef(totalPages);
+  totalPagesRef.current = totalPages;
+
+  const handlePageChange = useCallback((nextPage) => {
+    if (nextPage < 1 || nextPage > totalPagesRef.current) return;
     if (
-      activeTab === TABS.PAGE_VIEW &&
-      pageDraft.isDirty &&
+      activeTabRef.current === TABS.PAGE_VIEW &&
+      pageDraftRef.current.isDirty &&
       !window.confirm(
         "저장하지 않은 변경사항이 있습니다. 페이지를 이동할까요?"
       )
@@ -352,7 +416,55 @@ export default function App() {
       return;
     }
     setCurrentPage(nextPage);
-  };
+  }, []);
+
+  const registerVirtualPageSetter = useCallback((setter) => {
+    virtualPageSetterRef.current = setter;
+  }, []);
+
+  const handleVirtualNavChange = useCallback((nav) => {
+    setVirtualPageNav((prev) => {
+      if (
+        prev.current === nav.current &&
+        prev.total === nav.total &&
+        prev.active === nav.active
+      ) {
+        return prev;
+      }
+      return {
+        current: nav.current,
+        total: nav.total,
+        active: nav.active,
+      };
+    });
+  }, []);
+
+  const handleFooterPageChange = useCallback(
+    (nextPage) => {
+      if (
+        activeTab === TABS.PAGE_VIEW &&
+        virtualPageNav.active &&
+        virtualPageSetterRef.current
+      ) {
+        if (nextPage < 1 || nextPage > virtualPageNav.total) return;
+        virtualPageSetterRef.current(nextPage);
+        return;
+      }
+
+      handlePageChange(nextPage);
+    },
+    [activeTab, virtualPageNav.active, virtualPageNav.total, handlePageChange]
+  );
+
+  const footerCurrentPage =
+    activeTab === TABS.PAGE_VIEW && virtualPageNav.active
+      ? virtualPageNav.current
+      : currentPage;
+
+  const footerTotalPages =
+    activeTab === TABS.PAGE_VIEW && virtualPageNav.active
+      ? virtualPageNav.total
+      : totalPages;
 
   const viewerDescription = {
     [TABS.FULL_VIEW]:
@@ -360,7 +472,7 @@ export default function App() {
     [TABS.LAYOUT_VIEW]:
       "주석·질문을 드래그해 학습 카드로 추가하면 원문 위치로 돌아갑니다. 카드의 '원문 위치로'로 다시 이동할 수 있습니다.",
     [TABS.PAGE_VIEW]:
-      "편집 모드에서 요약 내용을 수정한 뒤 상단 저장 버튼으로 DB에 반영할 수 있습니다.",
+      "편집 후 저장하거나, 보내기/저장으로 현재 페이지를 이미지·PDF·마크다운으로 보낼 수 있습니다.",
     [TABS.NOTES]:
       "'레이아웃에 추가' 후 주석을 작성한 원문 위치로 자동 이동합니다.",
     [TABS.QUESTIONS]:
@@ -427,6 +539,44 @@ export default function App() {
           return;
         }
 
+        if (activeTab === TABS.PAGE_VIEW) {
+          const pageNumber = currentPage;
+          const pageLabel = `${baseName}-page-${pageNumber}`;
+          const pageBody =
+            root?.querySelector?.(".page-viewer-body .document-body") ?? root;
+          const draftContent = pageDraftRef.current.content;
+
+          if (action === "share") {
+            const sharePayload = buildPageShareText(
+              draftContent,
+              baseName,
+              pageNumber
+            );
+            await shareExportContent(sharePayload);
+            return;
+          }
+
+          if (action === "markdown") {
+            if (draftContent?.trim()) {
+              downloadMarkdownFile(`${pageLabel}.md`, draftContent);
+              return;
+            }
+            const data = await fetchPageExport(selectedDigest.id, pageNumber);
+            downloadMarkdownFile(data.filename, data.content);
+            return;
+          }
+
+          if (action === "image") {
+            await exportElementAsImage(pageBody, pageLabel);
+            return;
+          }
+
+          if (action === "pdf") {
+            await exportElementAsPdf(pageBody, pageLabel);
+          }
+          return;
+        }
+
         if (action === "share") {
           await shareExportContent({
             title: baseName,
@@ -449,27 +599,50 @@ export default function App() {
         setExportBusy(false);
       }
     },
-    [selectedDigest, activeTab, notes, chats]
+    [selectedDigest, activeTab, notes, chats, currentPage]
   );
 
-  const handleRequestAnnotation = (payload) => {
+  const handleRequestAnnotation = useCallback((payload) => {
     setActivePopup(null);
     setNoteDraft(null);
+    setNoteCompose(null);
     setChatDraft(null);
     setSelectionPopup(payload);
-  };
+  }, []);
 
-  const handleHighlightClick = (payload) => {
+  const handleHighlightClick = useCallback((payload) => {
     setSelectionPopup(null);
     setActivePopup(payload);
-  };
+  }, []);
+
+  const handleSearchClose = useCallback(() => setSearchOpen(false), []);
 
   const handleAddNoteFromSelection = () => {
     if (!selectionPopup) return;
+
+    const pageNumber = selectionPopup.pageNumber || currentPage;
+    const isViewerTab =
+      activeTab === TABS.FULL_VIEW ||
+      activeTab === TABS.PAGE_VIEW ||
+      activeTab === TABS.LAYOUT_VIEW;
+
+    if (isViewerTab) {
+      setNoteCompose({
+        selectedText: selectionPopup.selectedText,
+        pageNumber,
+        x: selectionPopup.x,
+        y: selectionPopup.y,
+      });
+      setChatDraft(null);
+      setSelectionPopup(null);
+      window.getSelection()?.removeAllRanges();
+      return;
+    }
+
     setActiveTab(TABS.NOTES);
     setNoteDraft({
       selectedText: selectionPopup.selectedText,
-      pageNumber: selectionPopup.pageNumber || currentPage,
+      pageNumber,
     });
     setChatDraft(null);
     setSelectionPopup(null);
@@ -520,10 +693,37 @@ export default function App() {
     }
   };
 
+  const handleNoteComposeSave = async (content) => {
+    if (!selectedDigest || !noteCompose) return;
+    setNoteSaving(true);
+    try {
+      const result = await saveNote(
+        selectedDigest.id,
+        noteCompose.selectedText,
+        content,
+        noteCompose.pageNumber || currentPage
+      );
+      setNotes(result.notes);
+      setNoteCompose(null);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setNoteSaving(false);
+    }
+  };
+
   const handleLogin = (id) => {
     localStorage.setItem("smartdigest_user", id);
     setUserId(id);
   };
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem("smartdigest_sidebar_open", String(next));
+      return next;
+    });
+  }, []);
 
   const handleLogout = () => {
     clearUsageStorage(userId);
@@ -553,22 +753,22 @@ export default function App() {
 
   const knowledgeUpload = (
     <KnowledgeUploadAccordion
-      userId={userId}
       usage={usage}
-      onUsageRefresh={loadUsage}
-      onQuotaExhausted={handleQuotaExhausted}
-      onUploaded={(digestId) => {
-        loadDigests();
-        setSelectedId(digestId);
-      }}
+      summaryStatus={summaryStatus}
+      isSummarizing={isSummarizing}
+      onSummarize={runSummary}
     />
   );
 
   const usageAccordion = <UsageAccordion usage={usage} />;
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div
+      className={`app-shell${sidebarOpen ? "" : " app-shell--sidebar-collapsed"}`}
+    >
+      <SidebarToggle open={sidebarOpen} onToggle={handleToggleSidebar} />
+
+      <aside className="sidebar" aria-hidden={!sidebarOpen}>
         <div className="sidebar-sticky-top">
           <div className="sidebar-header">
             <h1>SmartDigest</h1>
@@ -603,13 +803,16 @@ export default function App() {
       <main
         className={`main-panel${selectedDigest ? " main-panel--viewer" : " main-panel--empty"}`}
       >
+        <div
+          className={`dashboard-stack dashboard-stack--persistent${
+            selectedDigest ? " dashboard-stack--viewer" : ""
+          }`}
+        >
+          {usageAccordion}
+          {knowledgeUpload}
+        </div>
         {selectedDigest ? (
-        <>
-          <div className="dashboard-stack dashboard-stack--viewer">
-            {usageAccordion}
-            {knowledgeUpload}
-          </div>
-          <div className="main-panel-body">
+        <div className="main-panel-body">
           <section className="document-viewer">
             <div className="viewer-sticky-top">
               <div className="viewer-header-row">
@@ -620,13 +823,20 @@ export default function App() {
 
                 <div className="viewer-header-actions">
                   {activeTab === TABS.PAGE_VIEW && (
-                    <PageViewToolbar
-                      isDirty={pageDraft.isDirty}
-                      isEditing={pageEditing}
-                      onToggleEdit={() => setPageEditing((prev) => !prev)}
-                      onSave={handlePageSave}
-                      saving={pageSaving}
-                    />
+                    <>
+                      <PageViewToolbar
+                        isDirty={pageDraft.isDirty}
+                        isEditing={pageEditing}
+                        onToggleEdit={() => setPageEditing((prev) => !prev)}
+                        onSave={handlePageSave}
+                        saving={pageSaving}
+                      />
+                      <ViewerExportButton
+                        onExportSelect={handleExportAction}
+                        busy={exportBusy}
+                        includeMarkdown
+                      />
+                    </>
                   )}
                   {(activeTab === TABS.FULL_VIEW ||
                     activeTab === TABS.LAYOUT_VIEW) && (
@@ -713,120 +923,156 @@ export default function App() {
                   )}
                 </div>
               </div>
+
+              <div id="viewer-search-anchor" className="viewer-search-slot" />
             </div>
 
-            <div
-              ref={exportTargetRef}
-              className={`viewer-tab-panel${
-                activeTab === TABS.PAGE_VIEW ? " viewer-tab-panel--page" : ""
-              }`}
+            <div className="viewer-scroll-body">
+            <ViewerInteractionProvider
+              onRequestAnnotation={handleRequestAnnotation}
+              onHighlightClick={handleHighlightClick}
             >
-              {activeTab === TABS.FULL_VIEW && (
-                <SummaryViewer
-                  digestId={selectedDigest.id}
-                  annotations={highlightAnnotations}
-                  searchOpen={searchOpen}
-                  onSearchClose={() => setSearchOpen(false)}
-                  onVisiblePageChange={handleVisiblePageChange}
-                  onLoadedPagesChange={handleLoadedPagesChange}
-                  onRequestAnnotation={handleRequestAnnotation}
-                  onHighlightClick={handleHighlightClick}
-                />
-              )}
+              <div
+                ref={exportTargetRef}
+                className={`viewer-tab-panel${
+                  activeTab === TABS.PAGE_VIEW ? " viewer-tab-panel--page" : ""
+                }${
+                  activeTab === TABS.FULL_VIEW || activeTab === TABS.PAGE_VIEW
+                    ? " viewer-tab-panel--reader"
+                    : ""
+                }`}
+              >
+                {(activeTab === TABS.FULL_VIEW ||
+                  activeTab === TABS.PAGE_VIEW) && (
+                  <div className="viewer-reader-toolbar">
+                    <ReaderAlignToolbar
+                      value={readerAlign}
+                      onChange={handleReaderAlignChange}
+                    />
+                  </div>
+                )}
 
-              {activeTab === TABS.LAYOUT_VIEW && (
-                <LayoutViewer
-                  digestId={selectedDigest.id}
-                  layoutMode={currentLayout}
-                  notes={notes}
-                  chats={chats}
-                  layoutReloadToken={layoutGridReloadToken}
-                  onLayoutReload={() =>
-                    setLayoutGridReloadToken((prev) => prev + 1)
+                <Suspense
+                  fallback={
+                    <LoadingSpinner label="뷰어를 불러오는 중..." />
                   }
-                  onNavigateToSource={handleNavigateToSource}
-                  annotations={highlightAnnotations}
-                  searchOpen={searchOpen}
-                  onSearchClose={() => setSearchOpen(false)}
-                  onRequestAnnotation={handleRequestAnnotation}
-                  onHighlightClick={handleHighlightClick}
-                />
-              )}
-
-              {activeTab === TABS.PAGE_VIEW && (
-                <PageViewer
-                  digestId={selectedDigest.id}
-                  pageNumber={currentPage}
-                  totalPages={totalPages}
-                  annotations={highlightAnnotations}
-                  searchOpen={searchOpen}
-                  onSearchClose={() => setSearchOpen(false)}
-                  onPageChange={handlePageChange}
-                  onContentChange={handlePageContentChange}
-                  saveVersion={pageSaveVersion}
-                  isEditing={pageEditing}
-                  onEditingChange={setPageEditing}
-                  onRequestAnnotation={handleRequestAnnotation}
-                  onHighlightClick={handleHighlightClick}
-                  sourceFocus={sourceFocus}
-                />
-              )}
-
-              {activeTab === TABS.NOTES && (
-                <>
-                  <label className="annotation-filter-toggle">
-                    <input
-                      type="checkbox"
-                      checked={filterCurrentPageOnly}
-                      onChange={(e) => setFilterCurrentPageOnly(e.target.checked)}
+                >
+                  {activeTab === TABS.FULL_VIEW && (
+                    <SummaryViewer
+                      digestId={selectedDigest.id}
+                      annotations={highlightAnnotations}
+                      searchOpen={searchOpen}
+                      onSearchClose={handleSearchClose}
+                      onVisiblePageChange={handleVisiblePageChange}
+                      onLoadedPagesChange={handleLoadedPagesChange}
+                      textAlign={readerAlign}
                     />
-                    현재 보고 있는 페이지의 주석만 보기 (페이지 {currentPage})
-                  </label>
-                  <NoteList
-                    notes={pageNotes}
-                    onChange={setNotes}
-                    showPageBadge={!filterCurrentPageOnly}
-                    draft={noteDraft}
-                    onDraftConsumed={() => setNoteDraft(null)}
-                    onSaveDraft={handleNoteDraftSave}
-                    saving={noteSaving}
-                    onAddToLayout={handleAddToLayout}
-                    addingToLayoutKey={addingToLayoutKey}
-                  />
-                </>
-              )}
+                  )}
 
-              {activeTab === TABS.QUESTIONS && (
-                <>
-                  <label className="annotation-filter-toggle">
-                    <input
-                      type="checkbox"
-                      checked={filterCurrentPageOnly}
-                      onChange={(e) => setFilterCurrentPageOnly(e.target.checked)}
+                  {activeTab === TABS.LAYOUT_VIEW && (
+                    <LayoutViewer
+                      digestId={selectedDigest.id}
+                      layoutMode={currentLayout}
+                      notes={notes}
+                      chats={chats}
+                      layoutReloadToken={layoutGridReloadToken}
+                      onLayoutReload={() =>
+                        setLayoutGridReloadToken((prev) => prev + 1)
+                      }
+                      onAddToLayout={handleAddToLayout}
+                      addingToLayoutKey={addingToLayoutKey}
+                      onNavigateToSource={handleNavigateToSource}
+                      annotations={highlightAnnotations}
+                      searchOpen={searchOpen}
+                      onSearchClose={handleSearchClose}
                     />
-                    현재 보고 있는 페이지의 질문만 보기 (페이지 {currentPage})
-                  </label>
-                  <QuestionList
-                    digestId={selectedDigest.id}
-                    chats={pageChats}
-                    onChange={setChats}
-                    showPageBadge={!filterCurrentPageOnly}
-                    draft={chatDraft}
-                    onDraftConsumed={handleChatDraftConsumed}
-                    onAddToLayout={handleAddToLayout}
-                    addingToLayoutKey={addingToLayoutKey}
-                  />
-                </>
-              )}
-            </div>
+                  )}
+
+                  {activeTab === TABS.PAGE_VIEW && (
+                    <PageViewer
+                      digestId={selectedDigest.id}
+                      pageNumber={currentPage}
+                      totalPages={totalPages}
+                      annotations={highlightAnnotations}
+                      searchOpen={searchOpen}
+                      onSearchClose={handleSearchClose}
+                      onPageChange={handlePageChange}
+                      onContentChange={handlePageContentChange}
+                      saveVersion={pageSaveVersion}
+                      isEditing={pageEditing}
+                      onEditingChange={setPageEditing}
+                      onVirtualNavChange={handleVirtualNavChange}
+                      onVirtualNavSetter={registerVirtualPageSetter}
+                      textAlign={readerAlign}
+                      sourceFocus={sourceFocus}
+                    />
+                  )}
+                </Suspense>
+
+                {activeTab === TABS.NOTES && (
+                  <>
+                    <label className="annotation-filter-toggle">
+                      <input
+                        type="checkbox"
+                        checked={filterCurrentPageOnly}
+                        onChange={(e) =>
+                          setFilterCurrentPageOnly(e.target.checked)
+                        }
+                      />
+                      현재 보고 있는 페이지의 주석만 보기 (페이지 {currentPage})
+                    </label>
+                    <NoteList
+                      notes={pageNotes}
+                      onChange={setNotes}
+                      showPageBadge={!filterCurrentPageOnly}
+                      draft={noteDraft}
+                      onDraftConsumed={() => setNoteDraft(null)}
+                      onSaveDraft={handleNoteDraftSave}
+                      saving={noteSaving}
+                      onAddToLayout={handleAddToLayout}
+                      addingToLayoutKey={addingToLayoutKey}
+                    />
+                  </>
+                )}
+
+                {activeTab === TABS.QUESTIONS && (
+                  <>
+                    <label className="annotation-filter-toggle">
+                      <input
+                        type="checkbox"
+                        checked={filterCurrentPageOnly}
+                        onChange={(e) =>
+                          setFilterCurrentPageOnly(e.target.checked)
+                        }
+                      />
+                      현재 보고 있는 페이지의 질문만 보기 (페이지 {currentPage})
+                    </label>
+                    <QuestionList
+                      digestId={selectedDigest.id}
+                      userId={userId}
+                      chats={pageChats}
+                      onChange={setChats}
+                      onUsageRefresh={loadUsage}
+                      onQuotaExhausted={handleQuotaExhausted}
+                      showPageBadge={!filterCurrentPageOnly}
+                      draft={chatDraft}
+                      onDraftConsumed={handleChatDraftConsumed}
+                      onAddToLayout={handleAddToLayout}
+                      addingToLayoutKey={addingToLayoutKey}
+                    />
+                  </>
+                )}
+              </div>
+            </ViewerInteractionProvider>
 
             {activeTab === TABS.PAGE_VIEW && (
               <PageMiniFooter
-                currentPage={currentPage}
-                totalPages={totalPages}
-                onPageChange={handlePageChange}
+                currentPage={footerCurrentPage}
+                totalPages={footerTotalPages}
+                onPageChange={handleFooterPageChange}
               />
             )}
+            </div>
 
             {activePopup && (
               <NotePopup
@@ -842,6 +1088,17 @@ export default function App() {
               />
             )}
 
+            {noteCompose && (
+              <NoteComposePopup
+                selectedText={noteCompose.selectedText}
+                x={noteCompose.x}
+                y={noteCompose.y}
+                saving={noteSaving}
+                onSave={handleNoteComposeSave}
+                onClose={() => setNoteCompose(null)}
+              />
+            )}
+
             {selectionPopup && (
               <SelectionActionPopup
                 x={selectionPopup.x}
@@ -853,16 +1110,13 @@ export default function App() {
               />
             )}
           </section>
-          </div>
-        </>
+        </div>
         ) : (
           <div className="empty-state-layout">
             <div className="dashboard-card welcome-panel-compact">
               <h2>문서를 선택하거나 새 파일을 업로드하세요</h2>
               <p>왼쪽 목록에서 문서를 고르면 요약본과 주석·질문 기능을 사용할 수 있습니다.</p>
             </div>
-            {usageAccordion}
-            {knowledgeUpload}
           </div>
         )}
       </main>

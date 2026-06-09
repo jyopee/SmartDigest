@@ -2,8 +2,14 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" href="data:," />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SmartDigest</title>
+    <script>
+      window.process = window.process || {
+        env: { NODE_ENV: "development", DRAGGABLE_DEBUG: "" },
+      };
+    </script>
   </head>
   <body>
     <div id="root"></div>

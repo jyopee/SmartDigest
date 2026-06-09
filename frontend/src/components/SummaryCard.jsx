@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -14,10 +15,24 @@ const SOURCE_LABELS = {
   chat: "질문 카드",
 };
 
-export default function SummaryCard({ card, highlightedContent, onNavigateToSource }) {
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeRaw];
+
+function SummaryCard({ card, highlightedContent, onNavigateToSource }) {
   const cardType = normalizeCardType(card.type);
   const weight = normalizeWeight(card.weight, cardType);
   const sourceLabel = SOURCE_LABELS[card.source];
+
+  const handleSourceNavigate = useMemo(
+    () =>
+      onNavigateToSource
+        ? (event) => {
+            event.stopPropagation();
+            onNavigateToSource(card);
+          }
+        : null,
+    [card, onNavigateToSource]
+  );
 
   return (
     <article
@@ -35,14 +50,11 @@ export default function SummaryCard({ card, highlightedContent, onNavigateToSour
           </span>
         )}
         <h3 className="summary-card-title">{card.title}</h3>
-        {card.source && onNavigateToSource && (
+        {card.source && handleSourceNavigate && (
           <button
             type="button"
             className="summary-card-source-link"
-            onClick={(event) => {
-              event.stopPropagation();
-              onNavigateToSource(card);
-            }}
+            onClick={handleSourceNavigate}
             title="주석을 작성한 원문 위치로 이동"
           >
             원문 위치로
@@ -53,10 +65,15 @@ export default function SummaryCard({ card, highlightedContent, onNavigateToSour
         </span>
       </header>
       <div className="summary-card-body document-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+        <ReactMarkdown
+          remarkPlugins={REMARK_PLUGINS}
+          rehypePlugins={REHYPE_PLUGINS}
+        >
           {highlightedContent}
         </ReactMarkdown>
       </div>
     </article>
   );
 }
+
+export default memo(SummaryCard);

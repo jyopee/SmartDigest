@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import SummarySearchBar from "./SummarySearchBar";
 import SummaryGrid from "./SummaryGrid";
 import LayoutSnapshotBar from "./LayoutSnapshotBar";
 import LayoutDragSource from "./LayoutDragSource";
 
-export default function LayoutViewer({
+function LayoutViewer({
   digestId,
   layoutMode,
   notes = [],
@@ -12,6 +12,8 @@ export default function LayoutViewer({
   layoutReloadToken = 0,
   onLayoutReload,
   onNavigateToSource,
+  onAddToLayout,
+  addingToLayoutKey = null,
   annotations,
   searchOpen = false,
   onSearchClose,
@@ -45,6 +47,10 @@ export default function LayoutViewer({
   const handleGridSearchMatches = useCallback((count) => {
     setSearchMatchCount(count);
     setSearchActiveIndex((prev) => (prev >= count ? 0 : prev));
+  }, []);
+
+  const handleLayoutChange = useCallback((nextLayout) => {
+    setCurrentLayout(nextLayout);
   }, []);
 
   const handlePrevSearch = () => {
@@ -87,7 +93,12 @@ export default function LayoutViewer({
         }}
       />
 
-      <LayoutDragSource notes={notes} chats={chats} />
+      <LayoutDragSource
+        notes={notes}
+        chats={chats}
+        onAddToLayout={onAddToLayout}
+        addingToLayoutKey={addingToLayoutKey}
+      />
 
       <SummaryGrid
         digestId={digestId}
@@ -101,7 +112,7 @@ export default function LayoutViewer({
         searchQuery={searchQuery}
         searchActiveIndex={searchActiveIndex}
         onSearchMatchesChange={handleGridSearchMatches}
-        onLayoutChange={setCurrentLayout}
+        onLayoutChange={handleLayoutChange}
         onNavigateToSource={onNavigateToSource}
         onRequestAnnotation={onRequestAnnotation}
         onHighlightClick={onHighlightClick}
@@ -109,3 +120,5 @@ export default function LayoutViewer({
     </div>
   );
 }
+
+export default memo(LayoutViewer);

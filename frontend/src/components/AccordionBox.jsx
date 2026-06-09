@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 
 export const ACCORDION_MOTION = {
   duration: 0.28,
@@ -55,6 +55,7 @@ export default function AccordionBox({
   collapsedPreview = null,
   onExpandedChange,
   onCollapse,
+  disableToggle = false,
   children,
   className = "",
 }) {
@@ -78,7 +79,10 @@ export default function AccordionBox({
     if (!next) onCollapse?.();
   };
 
-  const toggle = () => setExpanded(!isExpanded);
+  const toggle = () => {
+    if (disableToggle) return;
+    setExpanded(!isExpanded);
+  };
 
   return (
     <motion.section
@@ -124,27 +128,20 @@ export default function AccordionBox({
         </motion.div>
       )}
 
-      <AnimatePresence initial={false}>
-        {isExpanded && (
-          <motion.div
-            key="accordion-panel"
-            layout
-            className="accordion-box-panel"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={ACCORDION_MOTION}
-          >
-            <motion.div
-              layout
-              className="accordion-box-body"
-              transition={ACCORDION_MOTION}
-            >
-              {children}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <motion.div
+        layout
+        className="accordion-box-panel"
+        initial={false}
+        animate={{
+          height: isExpanded ? "auto" : 0,
+          opacity: isExpanded ? 1 : 0,
+        }}
+        transition={ACCORDION_MOTION}
+        style={{ overflow: "hidden" }}
+        aria-hidden={!isExpanded}
+      >
+        <div className="accordion-box-body">{children}</div>
+      </motion.div>
     </motion.section>
   );
 }

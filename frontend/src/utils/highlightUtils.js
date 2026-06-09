@@ -139,10 +139,24 @@ export function setActiveSearchHit(hits, activeIndex) {
 /**
  * 마크업 문자열에 검색 하이라이트를 적용합니다. (React 렌더 전 사용)
  */
+export function countSearchMatches(text, query) {
+  if (!query.trim() || !text) return 0;
+
+  const regex = new RegExp(escapeRegExp(query), "gi");
+  let count = 0;
+  let match = regex.exec(text);
+  while (match) {
+    count += 1;
+    match = regex.exec(text);
+  }
+  return count;
+}
+
 export function applySearchHighlightsToMarkup(
   markup,
   query,
-  activeLocalIndex = -1
+  activeLocalIndex = -1,
+  indexStart = 0
 ) {
   if (!query.trim()) return markup;
 
@@ -154,7 +168,7 @@ export function applySearchHighlightsToMarkup(
       if (!part || part.startsWith("<")) return part;
 
       return part.replace(new RegExp(escapeRegExp(query), "gi"), (match) => {
-        const index = localIndex;
+        const index = indexStart + localIndex;
         localIndex += 1;
         const activeClass =
           index === activeLocalIndex ? " sd-search-active" : "";

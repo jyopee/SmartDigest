@@ -4,8 +4,12 @@ import react from "@vitejs/plugin-react";
 /** 백엔드 주소 — localhost 대신 127.0.0.1 (Windows IPv6 ECONNRESET 방지) */
 const BACKEND_URL = "http://127.0.0.1:8000";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  define: {
+    "process.env.NODE_ENV": JSON.stringify(mode),
+    "process.env.DRAGGABLE_DEBUG": JSON.stringify(""),
+  },
   server: {
     port: 5173,
     host: "127.0.0.1",
@@ -38,4 +42,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
