@@ -1,14 +1,33 @@
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-DB_PATH = Path(__file__).resolve().parent / "smart_digest.db"
+def _resolve_db_path() -> Path:
+    explicit = os.getenv("DATABASE_PATH", "").strip()
+    if explicit:
+        return Path(explicit)
+    if os.getenv("VERCEL") == "1" or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        return Path("/tmp/smart_digest.db")
+    return Path(__file__).resolve().parent / "smart_digest.db"
+
+
+DB_PATH = _resolve_db_path()
 
 
 def _connect():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
+
+
+def ping_db() -> None:
+    conn = _connect()
+    try:
+        conn.execute("SELECT 1")
+    finally:
+        conn.close()
 
 
 # DB 초기화: 테이블 생성 및 컬럼 확인

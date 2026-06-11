@@ -19,9 +19,6 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 import database as db
-import summary_service as summary_jobs
-from chat_engine import ask_question_rag
-from document_extractor import extract_text_from_upload
 from gemini_client import close_client, format_gemini_error
 from summary_cards import (
     add_card_from_source,
@@ -33,7 +30,6 @@ from summary_cards import (
     parse_digest_content,
     remove_card_from_grid,
 )
-from summary_engine import map_reduce_summarize
 from usage_tracker import (
     get_daily_usage,
     is_quota_exhausted,
@@ -150,7 +146,11 @@ class GridCardFromSourceRequest(BaseModel):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    try:
+        db.ping_db()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
+    return {"status": "ok", "db_path": str(db.DB_PATH)}
 
 @app.post("/api/auth/register")
 async def register(body: AuthRequest):
@@ -219,6 +219,8 @@ async def start_summary(
     if not raw:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
 
+    import summary_service as summary_jobs
+
     job_id = summary_jobs.create_job(user_id, file.filename)
     background_tasks.add_task(
         summary_jobs.run_summary_job,
@@ -235,6 +237,8 @@ async def start_summary(
 
 
 async def _summary_event_generator(job_id: str):
+    import summary_service as summary_jobs
+
     while True:
         job = summary_jobs.get_job(job_id)
         if not job:
@@ -280,6 +284,8 @@ async def _summary_event_generator(job_id: str):
 
 @app.get("/api/summary/stream/{job_id}")
 async def stream_summary(job_id: str):
+    import summary_service as summary_jobs
+
     if not summary_jobs.get_job(job_id):
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
     return EventSourceResponse(_summary_event_generator(job_id))
@@ -303,6 +309,9 @@ async def upload_document(user_id: str = Form(...), file: UploadFile = File(...)
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
+
+    from document_extractor import extract_text_from_upload
+    from summary_engine import map_reduce_summarize
 
     _text, source_chunks = extract_text_from_upload(file.filename, raw, user_id=user_id)
     if not source_chunks:
@@ -770,6 +779,8 @@ async def chat_ask(body: ChatAskRequest):
 
     if db.get_digest_content_by_id(body.digest_id) is None:
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+
+    from chat_engine import ask_question_rag
 
     usage_token = set_usage_user(user_id)
     try:
