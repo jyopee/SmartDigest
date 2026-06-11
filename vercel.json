@@ -5,7 +5,7 @@
   "outputDirectory": "frontend/dist",
   "framework": null,
   "functions": {
-    "backend/main.py": {
+    "api/index.py": {
       "maxDuration": 300,
       "excludeFiles": "{frontend/**,legacy_streamlit_app.py,**/*.db,**/__pycache__/**,.venv/**}"
     }
@@ -13,7 +13,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/backend/main.py"
+      "destination": "/api/index.py"
     },
     {
       "source": "/(.*)",
