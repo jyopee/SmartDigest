@@ -13,7 +13,8 @@ import {
   setActiveSearchHit,
   stripDecorativeMarkup,
 } from "../utils/highlightUtils";
-import { readerAlignClass } from "../constants/readerAlign";
+import { readerAlignClass, readerAlignStyle } from "../constants/readerAlign";
+import { focusDocumentSource } from "../utils/sourceNavigation";
 
 function getPageNumberFromNode(node) {
   const section = node?.closest?.("[data-page-number]");
@@ -38,6 +39,7 @@ function SummaryViewer({
   onRequestAnnotation,
   onHighlightClick,
   textAlign = "left",
+  sourceFocus = null,
 }) {
   const viewerInteraction = useViewerInteraction();
   const requestAnnotation =
@@ -335,6 +337,21 @@ function SummaryViewer({
     scrollToSearchIndex(nextIndex);
   };
 
+  useEffect(() => {
+    if (!sourceFocus || initialLoading) return;
+
+    const pageNum = sourceFocus.pageNumber || 1;
+    waitForPaint().then(() => {
+      const section = containerRef.current?.querySelector(
+        `[data-page-number="${pageNum}"]`
+      );
+      section?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return waitForPaint();
+    }).then(() => {
+      focusDocumentSource(containerRef.current, sourceFocus);
+    });
+  }, [sourceFocus, initialLoading, loadedPages]);
+
   const loadedMaxPage = loadedPages.length
     ? Math.max(...loadedPages.map((page) => page.pageNumber))
     : 0;
@@ -365,6 +382,7 @@ function SummaryViewer({
       <div
         ref={containerRef}
         className={`document-body summary-scroll-body reader-prose ${readerAlignClass(textAlign)}`}
+        style={readerAlignStyle(textAlign)}
         onMouseUp={handleDocumentMouseUp}
         onClick={handleHighlightClick}
       >

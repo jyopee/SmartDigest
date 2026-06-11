@@ -26,7 +26,7 @@ import {
 } from "../utils/pageSplitStorage";
 import SplittableMarkdownBody from "./SplittableMarkdownBody";
 import Toast, { useToast } from "./Toast";
-import { readerAlignClass } from "../constants/readerAlign";
+import { readerAlignClass, readerAlignStyle } from "../constants/readerAlign";
 
 function waitForPaint() {
   return new Promise((resolve) => {
@@ -451,6 +451,7 @@ function PageViewer({
           className={`document-body reader-prose ${readerAlignClass(textAlign)}${
             isEditing ? " is-editing" : ""
           }`}
+          style={readerAlignStyle(textAlign)}
           data-page-number={pageNumber}
           onMouseUp={isEditing ? undefined : handleDocumentMouseUp}
           onClick={isEditing ? undefined : handleHighlightClick}

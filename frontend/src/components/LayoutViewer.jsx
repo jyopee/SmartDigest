@@ -19,6 +19,9 @@ function LayoutViewer({
   onSearchClose,
   onRequestAnnotation,
   onHighlightClick,
+  textAlign = "left",
+  focusCardId = null,
+  onFocusCardClear,
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchActiveIndex, setSearchActiveIndex] = useState(0);
@@ -133,6 +136,9 @@ function LayoutViewer({
         onNavigateToSource={onNavigateToSource}
         onRequestAnnotation={onRequestAnnotation}
         onHighlightClick={onHighlightClick}
+        textAlign={textAlign}
+        focusCardId={focusCardId}
+        onFocusCardClear={onFocusCardClear}
       />
     </div>
   );

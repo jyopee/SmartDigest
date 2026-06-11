@@ -1,0 +1,19 @@
+[project]
+name = "smartdigest"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-dotenv",
+    "python-multipart",
+    "google-genai",
+    "pymupdf",
+    "python-docx",
+    "python-pptx",
+    "sse-starlette",
+    "tenacity",
+]
+
+[tool.vercel]
+entrypoint = "backend.main:app"

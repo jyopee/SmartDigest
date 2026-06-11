@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { login, register } from "../api/client";
+import AppLogo from "./AppLogo";
 
 export default function LoginForm({ onLogin }) {
   const [mode, setMode] = useState("login");
@@ -40,13 +41,8 @@ export default function LoginForm({ onLogin }) {
       <div className="auth-card-glow" aria-hidden="true" />
 
       <header className="auth-brand">
-        <div className="auth-brand-mark" aria-hidden="true">
-          SD
-        </div>
-        <div className="auth-brand-copy">
-          <h1>SmartDigest</h1>
-          <p className="auth-subtitle">지식 자산 창고</p>
-        </div>
+        <AppLogo variant="banner" className="auth-brand-logo" title="SmartDigest" />
+        <p className="auth-subtitle">지식 자산 창고</p>
       </header>
 
       <div className="auth-tabs" role="tablist" aria-label="인증 방식">

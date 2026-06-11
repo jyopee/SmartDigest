@@ -51,6 +51,22 @@ export function saveUsageToStorage(userId, usage) {
   );
 }
 
+export function createDefaultUsage(limit = FREE_TIER_DAILY_LIMIT) {
+  return {
+    date: todayStr(),
+    used_count: 0,
+    call_count: 0,
+    limit,
+    remaining: limit,
+  };
+}
+
+/** 캐시 또는 기본값(20)으로 즉시 렌더링용 */
+export function getInitialUsage(userId) {
+  if (!userId) return null;
+  return loadUsageFromStorage(userId) ?? createDefaultUsage();
+}
+
 export function loadUsageFromStorage(userId) {
   if (!userId) return null;
   try {

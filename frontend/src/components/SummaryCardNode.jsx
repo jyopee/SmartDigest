@@ -1,4 +1,5 @@
 import { memo, useMemo } from "react";
+import { motion } from "framer-motion";
 import { Handle, Position } from "@xyflow/react";
 import SummaryCard from "./SummaryCard";
 import {
@@ -25,6 +26,9 @@ function SummaryCardNode({ data, selected }) {
     deletingCardId,
     connectMode = false,
     isConnectSource = false,
+    positionAnimating = false,
+    textAlign = "left",
+    isDashboardFocus = false,
   } = data;
 
   const highlightedContent = useMemo(() => {
@@ -43,14 +47,21 @@ function SummaryCardNode({ data, selected }) {
     matchingCardIds[searchActiveIndex % matchingCardIds.length] === card.id;
 
   return (
-    <div
+    <motion.div
       className={`mindmap-card-node${selected ? " is-selected" : ""}${
         isMatch ? "" : " is-search-hidden"
       }${isActive ? " is-search-active" : ""}${
         connectMode ? " is-connect-mode" : ""
-      }${isConnectSource ? " is-connect-source" : ""}`}
+      }${isConnectSource ? " is-connect-source" : ""}${
+        positionAnimating ? " is-position-animating" : ""
+      }${isDashboardFocus ? " is-dashboard-focus" : ""}`}
       data-card-id={String(card.id)}
       data-page-number={card.page_number || 1}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{
+        duration: positionAnimating ? 0.32 : 0.18,
+        ease: [0.4, 0, 0.2, 1],
+      }}
     >
       {HANDLES.map((handle) => (
         <Handle
@@ -76,8 +87,9 @@ function SummaryCardNode({ data, selected }) {
         onNavigateToSource={onNavigateToSource}
         onDelete={onDeleteCard}
         deleting={deletingCardId === card.id}
+        textAlign={textAlign}
       />
-    </div>
+    </motion.div>
   );
 }
 

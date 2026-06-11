@@ -17,7 +17,8 @@ export default function QuestionList({
   onQuotaExhausted,
   showPageBadge = false,
   draft = null,
-  onDraftConsumed,
+  onDraftCancel,
+  onAskComplete,
   onAddToLayout,
   addingToLayoutKey = null,
 }) {
@@ -51,7 +52,7 @@ export default function QuestionList({
       onChange(result.chats);
       setQuestion("");
       setExpandedId(result.chat?.id ?? null);
-      onDraftConsumed?.();
+      onAskComplete?.();
       onUsageRefresh?.();
     } catch (err) {
       if (isRateLimitError(err)) {
@@ -101,7 +102,7 @@ export default function QuestionList({
         />
         <div className="tab-composer-actions">
           {draft && (
-            <button type="button" onClick={() => onDraftConsumed?.()}>
+            <button type="button" onClick={() => onDraftCancel?.()}>
               취소
             </button>
           )}

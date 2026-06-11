@@ -35,6 +35,9 @@ import {
 } from "./constants/readerAlign";
 import SearchIcon from "./components/SearchIcon";
 import UsageAccordion from "./components/UsageAccordion";
+import HomeDashboard from "./components/HomeDashboard";
+import AppLogo from "./components/AppLogo";
+import { recordRecentDigest } from "./utils/recentDigests";
 import useSummaryJob from "./hooks/useSummaryJob";
 import {
   fetchDigests,
@@ -45,6 +48,7 @@ import {
   applyQuotaExhausted,
   isRateLimitError,
   clearUsageStorage,
+  getInitialUsage,
   fetchPageMeta,
   savePageContent,
   fetchPageExport,
@@ -52,6 +56,10 @@ import {
 } from "./api";
 import { addGridCardFromSource } from "./api/gridLayoutService";
 import { buildSourceFocusFromCard } from "./utils/sourceNavigation";
+import {
+  buildReadingContext,
+  restoreViewerScrollTop,
+} from "./utils/readingContext";
 import {
   buildChatsShareText,
   buildNotesShareText,
@@ -122,11 +130,13 @@ export default function App() {
   const [currentLayout, setCurrentLayout] = useState(LAYOUT_MODES.MINDMAP);
   const [readerAlign, setReaderAlign] = useState("left");
   const [layoutGridReloadToken, setLayoutGridReloadToken] = useState(0);
+  const [layoutFocusCardId, setLayoutFocusCardId] = useState(null);
   const [addingToLayoutKey, setAddingToLayoutKey] = useState(null);
   const [sourceFocus, setSourceFocus] = useState(null);
   const [exportBusy, setExportBusy] = useState(false);
   const exportTargetRef = useRef(null);
-  const [usage, setUsage] = useState(null);
+  const [usage, setUsage] = useState(() => getInitialUsage(userId));
+  const readingContextRef = useRef(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     const saved = localStorage.getItem("smartdigest_sidebar_open");
     return saved !== "false";
@@ -186,6 +196,7 @@ export default function App() {
       setUsage(null);
       return;
     }
+    setUsage((prev) => prev ?? getInitialUsage(userId));
     try {
       const data = await syncUsageWithServer(userId);
       setUsage(data);
@@ -253,8 +264,13 @@ export default function App() {
   }, [loadDigests]);
 
   useEffect(() => {
+    if (!userId) {
+      setUsage(null);
+      return;
+    }
+    setUsage(getInitialUsage(userId));
     loadUsage();
-  }, [loadUsage]);
+  }, [loadUsage, userId]);
 
   useEffect(() => {
     setSelectionPopup(null);
@@ -262,6 +278,7 @@ export default function App() {
     setNoteCompose(null);
     setChatDraft(null);
     setChatReturnTab(null);
+    readingContextRef.current = null;
     setActivePopup(null);
     setActiveTab(TABS.FULL_VIEW);
     setCurrentPage(1);
@@ -301,6 +318,11 @@ export default function App() {
     setReaderAlign(loadReaderAlign(selectedId));
   }, [selectedId]);
 
+  useEffect(() => {
+    if (!userId || !selectedId) return;
+    recordRecentDigest(userId, selectedId);
+  }, [userId, selectedId]);
+
   const handleReaderAlignChange = (align) => {
     setReaderAlign(align);
     if (selectedId) saveReaderAlign(selectedId, align);
@@ -310,6 +332,13 @@ export default function App() {
     setCurrentLayout(mode);
     if (selectedId) saveLayoutMode(selectedId, mode);
   };
+
+  const handleOpenKnowledgeCard = useCallback(({ digestId, cardId }) => {
+    if (!digestId || !cardId) return;
+    setSelectedId(digestId);
+    setActiveTab(TABS.LAYOUT_VIEW);
+    setLayoutFocusCardId(String(cardId));
+  }, []);
 
   const handleNavigateToSource = useCallback(
     (payload) => {
@@ -348,6 +377,32 @@ export default function App() {
     [notes, chats]
   );
 
+  const restoreReadingContext = useCallback(() => {
+    const ctx = readingContextRef.current;
+    if (!ctx) return false;
+
+    setChatDraft(null);
+    setChatReturnTab(null);
+    setActiveTab(ctx.tab);
+    if (ctx.tab === TABS.PAGE_VIEW && ctx.pageNumber) {
+      setCurrentPage(ctx.pageNumber);
+    }
+
+    restoreViewerScrollTop(ctx.scrollTop);
+
+    if (ctx.selectedText) {
+      window.setTimeout(() => {
+        setSourceFocus({
+          selectedText: ctx.selectedText,
+          pageNumber: ctx.pageNumber || 1,
+          token: Date.now(),
+        });
+      }, 120);
+    }
+
+    return true;
+  }, []);
+
   const handleAddToLayout = useCallback(
     async (source, sourceId) => {
       if (!selectedDigest?.id) return;
@@ -356,14 +411,16 @@ export default function App() {
       try {
         await addGridCardFromSource(selectedDigest.id, source, sourceId);
         setLayoutGridReloadToken((prev) => prev + 1);
-        setActiveTab(TABS.LAYOUT_VIEW);
+        if (!restoreReadingContext()) {
+          setActiveTab(TABS.LAYOUT_VIEW);
+        }
       } catch (err) {
         alert(err.message || "학습 카드를 추가하지 못했습니다.");
       } finally {
         setAddingToLayoutKey(null);
       }
     },
-    [selectedDigest?.id]
+    [selectedDigest?.id, restoreReadingContext]
   );
 
   useEffect(() => {
@@ -655,23 +712,29 @@ export default function App() {
       activeTab === TABS.FULL_VIEW || activeTab === TABS.PAGE_VIEW
         ? activeTab
         : TABS.FULL_VIEW;
+    const pageNumber = selectionPopup.pageNumber || currentPage;
+    readingContextRef.current = buildReadingContext({
+      tab: originTab,
+      pageNumber,
+      selectedText: selectionPopup.selectedText,
+    });
     setChatReturnTab(originTab);
     setActiveTab(TABS.QUESTIONS);
     setChatDraft({
       selectedText: selectionPopup.selectedText,
-      pageNumber: selectionPopup.pageNumber || currentPage,
+      pageNumber,
     });
     setNoteDraft(null);
     setSelectionPopup(null);
     window.getSelection()?.removeAllRanges();
   };
 
-  const handleChatDraftConsumed = () => {
-    setChatDraft(null);
-    if (chatReturnTab) {
-      setActiveTab(chatReturnTab);
-      setChatReturnTab(null);
-    }
+  const handleChatDraftCancel = () => {
+    restoreReadingContext();
+  };
+
+  const handleChatAskComplete = () => {
+    restoreReadingContext();
   };
 
   const handleNoteDraftSave = async (content) => {
@@ -738,6 +801,7 @@ export default function App() {
     setNoteDraft(null);
     setChatDraft(null);
     setChatReturnTab(null);
+    readingContextRef.current = null;
     setCurrentPage(1);
     setTotalPages(1);
     setLoadedPages(1);
@@ -771,8 +835,13 @@ export default function App() {
       <aside className="sidebar" aria-hidden={!sidebarOpen}>
         <div className="sidebar-sticky-top">
           <div className="sidebar-header">
-            <h1>SmartDigest</h1>
-            <p>{userId}님의 지식창고</p>
+            <div className="sidebar-brand">
+              <AppLogo size={36} variant="mark" className="sidebar-brand-logo" />
+              <div className="sidebar-brand-copy">
+                <h1>SmartDigest</h1>
+                <p>{userId}님의 지식창고</p>
+              </div>
+            </div>
             <button type="button" className="logout-btn" onClick={handleLogout}>
               로그아웃
             </button>
@@ -803,15 +872,12 @@ export default function App() {
       <main
         className={`main-panel${selectedDigest ? " main-panel--viewer" : " main-panel--empty"}`}
       >
-        <div
-          className={`dashboard-stack dashboard-stack--persistent${
-            selectedDigest ? " dashboard-stack--viewer" : ""
-          }`}
-        >
+        {selectedDigest ? (
+        <>
+        <div className="dashboard-stack dashboard-stack--persistent dashboard-stack--viewer">
           {usageAccordion}
           {knowledgeUpload}
         </div>
-        {selectedDigest ? (
         <div className="main-panel-body">
           <section className="document-viewer">
             <div className="viewer-sticky-top">
@@ -937,13 +1003,16 @@ export default function App() {
                 className={`viewer-tab-panel${
                   activeTab === TABS.PAGE_VIEW ? " viewer-tab-panel--page" : ""
                 }${
-                  activeTab === TABS.FULL_VIEW || activeTab === TABS.PAGE_VIEW
+                  activeTab === TABS.FULL_VIEW ||
+                  activeTab === TABS.PAGE_VIEW ||
+                  activeTab === TABS.LAYOUT_VIEW
                     ? " viewer-tab-panel--reader"
                     : ""
                 }`}
               >
                 {(activeTab === TABS.FULL_VIEW ||
-                  activeTab === TABS.PAGE_VIEW) && (
+                  activeTab === TABS.PAGE_VIEW ||
+                  activeTab === TABS.LAYOUT_VIEW) && (
                   <div className="viewer-reader-toolbar">
                     <ReaderAlignToolbar
                       value={readerAlign}
@@ -966,6 +1035,7 @@ export default function App() {
                       onVisiblePageChange={handleVisiblePageChange}
                       onLoadedPagesChange={handleLoadedPagesChange}
                       textAlign={readerAlign}
+                      sourceFocus={sourceFocus}
                     />
                   )}
 
@@ -985,6 +1055,9 @@ export default function App() {
                       annotations={highlightAnnotations}
                       searchOpen={searchOpen}
                       onSearchClose={handleSearchClose}
+                      textAlign={readerAlign}
+                      focusCardId={layoutFocusCardId}
+                      onFocusCardClear={() => setLayoutFocusCardId(null)}
                     />
                   )}
 
@@ -1056,7 +1129,8 @@ export default function App() {
                       onQuotaExhausted={handleQuotaExhausted}
                       showPageBadge={!filterCurrentPageOnly}
                       draft={chatDraft}
-                      onDraftConsumed={handleChatDraftConsumed}
+                      onDraftCancel={handleChatDraftCancel}
+                      onAskComplete={handleChatAskComplete}
                       onAddToLayout={handleAddToLayout}
                       addingToLayoutKey={addingToLayoutKey}
                     />
@@ -1111,12 +1185,20 @@ export default function App() {
             )}
           </section>
         </div>
+        </>
         ) : (
-          <div className="empty-state-layout">
-            <div className="dashboard-card welcome-panel-compact">
-              <h2>문서를 선택하거나 새 파일을 업로드하세요</h2>
-              <p>왼쪽 목록에서 문서를 고르면 요약본과 주석·질문 기능을 사용할 수 있습니다.</p>
+          <div className="dashboard-center-shell">
+            <div className="dashboard-stack dashboard-stack--persistent">
+              {usageAccordion}
+              {knowledgeUpload}
             </div>
+            <HomeDashboard
+              digests={digests}
+              usage={usage}
+              userId={userId}
+              onSelectDigest={setSelectedId}
+              onOpenKnowledgeCard={handleOpenKnowledgeCard}
+            />
           </div>
         )}
       </main>

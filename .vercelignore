@@ -1,0 +1,7 @@
+.venv
+frontend/node_modules
+**/__pycache__
+**/*.pyc
+**/*.db
+legacy_streamlit_app.py
+.git

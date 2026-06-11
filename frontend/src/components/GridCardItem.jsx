@@ -15,6 +15,7 @@ function GridCardItem({
   onNavigateToSource,
   onDelete,
   deletingCardId,
+  textAlign = "left",
 }) {
   const highlightedContent = useMemo(() => {
     const cardAnnotations = annotations.filter(
@@ -45,6 +46,7 @@ function GridCardItem({
         onNavigateToSource={onNavigateToSource}
         onDelete={onDelete}
         deleting={deletingCardId === card.id}
+        textAlign={textAlign}
       />
     </div>
   );

@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { normalizeCardType, normalizeWeight } from "../utils/smartLayoutEngine";
+import { readerAlignClass, readerAlignStyle } from "../constants/readerAlign";
 
 const TYPE_LABELS = {
   main: "주제",
@@ -24,6 +25,7 @@ function SummaryCard({
   onNavigateToSource,
   onDelete,
   deleting = false,
+  textAlign = "left",
 }) {
   const cardType = normalizeCardType(card.type);
   const weight = normalizeWeight(card.weight, cardType);
@@ -85,7 +87,10 @@ function SummaryCard({
           ⋮⋮
         </span>
       </header>
-      <div className="summary-card-body document-body">
+      <div
+        className={`summary-card-body document-body reader-prose ${readerAlignClass(textAlign)}`}
+        style={readerAlignStyle(textAlign, { blockPosition: false })}
+      >
         <ReactMarkdown
           remarkPlugins={REMARK_PLUGINS}
           rehypePlugins={REHYPE_PLUGINS}

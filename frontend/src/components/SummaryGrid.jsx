@@ -26,7 +26,7 @@ import {
 } from "../utils/highlightUtils";
 import { enrichCards } from "../utils/smartLayoutEngine";
 import {
-  buildDefaultMindMapLayout,
+  autoArrangeMindMapLayout,
   ensureMindMapLayoutForCards,
 } from "../utils/mindMapLayoutEngine";
 import { buildSourceFocusFromCard } from "../utils/sourceNavigation";
@@ -41,6 +41,7 @@ function renderCardItem(card, props) {
     onNavigateToSource,
     onDeleteCard,
     deletingCardId,
+    textAlign = "left",
   } = props;
 
   const deleteProps = {
@@ -61,6 +62,7 @@ function renderCardItem(card, props) {
         onNavigateToSource={onNavigateToSource}
         onDelete={deleteProps.onDelete}
         deletingCardId={deletingCardId}
+        textAlign={textAlign}
       />
     );
   }
@@ -84,6 +86,7 @@ function renderCardItem(card, props) {
         card={card}
         highlightedContent={highlighted}
         onNavigateToSource={onNavigateToSource}
+        textAlign={textAlign}
         {...deleteProps}
       />
     </div>
@@ -105,6 +108,9 @@ function SummaryGrid({
   onNavigateToSource,
   onRequestAnnotation,
   onHighlightClick,
+  textAlign = "left",
+  focusCardId = null,
+  onFocusCardClear,
 }) {
   const viewerInteraction = useViewerInteraction();
   const requestAnnotation =
@@ -222,6 +228,24 @@ function SummaryGrid({
     node?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [layoutMode, searchQuery, searchActiveIndex, matchingCardIds]);
 
+  useEffect(() => {
+    if (!focusCardId) return;
+
+    const timer = window.setTimeout(() => {
+      const node = containerRef.current?.querySelector(
+        `[data-card-id="${focusCardId}"]`
+      );
+      if (node) {
+        node.scrollIntoView({ behavior: "smooth", block: "center" });
+        node.classList.add("is-dashboard-focus");
+        window.setTimeout(() => node.classList.remove("is-dashboard-focus"), 2600);
+      }
+      onFocusCardClear?.();
+    }, 320);
+
+    return () => window.clearTimeout(timer);
+  }, [focusCardId, cards, layoutMode, layoutRevision, onFocusCardClear]);
+
   const persistLayout = useCallback(
     (nextLayout) => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -241,14 +265,18 @@ function SummaryGrid({
     [onLayoutChange]
   );
 
-  const handleApplyDefaultLayout = () => {
-    const nextLayout = buildDefaultMindMapLayout(cards);
-    latestLayoutRef.current = nextLayout;
-    setMindMapLayout(nextLayout);
-    setLayoutRevision((prev) => prev + 1);
-    onLayoutChange?.(nextLayout);
-    persistLayout(nextLayout);
-  };
+  const handleApplyAutoLayout = useCallback(
+    (nextLayout) => {
+      const arranged =
+        nextLayout ?? autoArrangeMindMapLayout(latestLayoutRef.current, cards);
+      latestLayoutRef.current = arranged;
+      setMindMapLayout(arranged);
+      setLayoutRevision((prev) => prev + 1);
+      onLayoutChange?.(arranged);
+      persistLayout(arranged);
+    },
+    [cards, onLayoutChange, persistLayout]
+  );
 
   const handleDragOver = (event) => {
     if (!readDragPayload(event.dataTransfer)) return;
@@ -382,6 +410,7 @@ function SummaryGrid({
       onNavigateToSource: handleCardSourceNavigate,
       onDeleteCard: handleDeleteCard,
       deletingCardId,
+      textAlign,
     }),
     [
       annotations,
@@ -391,6 +420,7 @@ function SummaryGrid({
       handleCardSourceNavigate,
       handleDeleteCard,
       deletingCardId,
+      textAlign,
     ]
   );
 
@@ -453,10 +483,12 @@ function SummaryGrid({
           layoutRevision={layoutRevision}
           onLayoutChange={handleMindMapLayoutChange}
           onPersistLayout={persistLayout}
-          onApplyDefaultLayout={handleApplyDefaultLayout}
+          onApplyAutoLayout={handleApplyAutoLayout}
           searchQuery={searchQuery}
           matchingCardIds={matchingCardIds}
           searchActiveIndex={searchActiveIndex}
+          focusCardId={focusCardId}
+          onFocusCardClear={onFocusCardClear}
         />
       )}
 

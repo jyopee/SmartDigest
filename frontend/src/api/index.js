@@ -24,6 +24,7 @@ export {
   fetchUsageToday,
   FREE_TIER_DAILY_LIMIT,
   getQuotaStats,
+  getInitialUsage,
   syncUsageWithServer,
   applyQuotaExhausted,
   isRateLimitError,

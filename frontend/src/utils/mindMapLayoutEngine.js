@@ -21,12 +21,208 @@ export function toFlowTargetHandle(handleId) {
   const base = normalizeHandleId(handleId);
   return base ? `${base}-target` : "";
 }
-export const NODE_STEP_X = 380;
-export const NODE_STEP_Y = 240;
 export const MINDMAP_PADDING_X = 96;
 export const MINDMAP_PADDING_Y = 96;
 export const MINDMAP_NODE_WIDTH = 300;
 export const MINDMAP_NODE_HEIGHT = 200;
+/** 카드 간 최소 여백 — 겹침 방지·자동 배치에 공통 적용 */
+export const MINDMAP_MIN_GAP_X = 80;
+export const MINDMAP_MIN_GAP_Y = 40;
+export const NODE_STEP_X = MINDMAP_NODE_WIDTH + MINDMAP_MIN_GAP_X;
+export const NODE_STEP_Y = MINDMAP_NODE_HEIGHT + MINDMAP_MIN_GAP_Y;
+
+function normalizeLayoutNode(node) {
+  return {
+    id: String(node.id),
+    x: Math.round(Number(node.x ?? node.position?.x) || 0),
+    y: Math.round(Number(node.y ?? node.position?.y) || 0),
+  };
+}
+
+function getOverlap(nodeA, nodeB) {
+  const overlapX =
+    Math.min(
+      nodeA.x + MINDMAP_NODE_WIDTH + MINDMAP_MIN_GAP_X,
+      nodeB.x + MINDMAP_NODE_WIDTH + MINDMAP_MIN_GAP_X
+    ) - Math.max(nodeA.x, nodeB.x);
+  const overlapY =
+    Math.min(
+      nodeA.y + MINDMAP_NODE_HEIGHT + MINDMAP_MIN_GAP_Y,
+      nodeB.y + MINDMAP_NODE_HEIGHT + MINDMAP_MIN_GAP_Y
+    ) - Math.max(nodeA.y, nodeB.y);
+
+  if (overlapX <= 0 || overlapY <= 0) return null;
+  return { overlapX, overlapY };
+}
+
+function nodePriority(id, priorityId) {
+  if (priorityId && id === priorityId) return 2;
+  return 1;
+}
+
+/** 드래그·데이터 추가 후 겹치는 카드를 밀어냅니다. */
+export function resolveNodeCollisions(nodes, priorityId = null) {
+  if (!nodes?.length) return [];
+
+  const result = nodes.map(normalizeLayoutNode);
+  const maxIterations = Math.max(24, result.length * result.length * 2);
+  let changed = true;
+  let iterations = 0;
+
+  while (changed && iterations < maxIterations) {
+    changed = false;
+    iterations += 1;
+
+    for (let i = 0; i < result.length; i += 1) {
+      for (let j = i + 1; j < result.length; j += 1) {
+        const overlap = getOverlap(result[i], result[j]);
+        if (!overlap) continue;
+
+        changed = true;
+        const priorityDiff =
+          nodePriority(result[i].id, priorityId) -
+          nodePriority(result[j].id, priorityId);
+
+        let mover = result[j];
+        let anchor = result[i];
+        if (priorityDiff > 0) {
+          mover = result[i];
+          anchor = result[j];
+        } else if (priorityDiff < 0) {
+          mover = result[j];
+          anchor = result[i];
+        }
+
+        if (overlap.overlapX <= overlap.overlapY) {
+          if (mover.x >= anchor.x) {
+            mover.x = anchor.x + MINDMAP_NODE_WIDTH + MINDMAP_MIN_GAP_X;
+          } else {
+            mover.x = anchor.x - MINDMAP_NODE_WIDTH - MINDMAP_MIN_GAP_X;
+          }
+        } else if (mover.y >= anchor.y) {
+          mover.y = anchor.y + MINDMAP_NODE_HEIGHT + MINDMAP_MIN_GAP_Y;
+        } else {
+          mover.y = anchor.y - MINDMAP_NODE_HEIGHT - MINDMAP_MIN_GAP_Y;
+        }
+
+        mover.x = Math.max(MINDMAP_PADDING_X, mover.x);
+        mover.y = Math.max(MINDMAP_PADDING_Y, mover.y);
+
+        if (!priorityId || priorityDiff === 0) {
+          const partner = mover === result[i] ? result[j] : result[i];
+          if (partner.x < MINDMAP_PADDING_X) partner.x = MINDMAP_PADDING_X;
+          if (partner.y < MINDMAP_PADDING_Y) partner.y = MINDMAP_PADDING_Y;
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+function arrangeBySortedColumns(nodes) {
+  const sorted = [...nodes].sort((a, b) => {
+    if (a.x !== b.x) return a.x - b.x;
+    return a.y - b.y;
+  });
+
+  const columnsPerRow = Math.max(2, Math.ceil(Math.sqrt(sorted.length)));
+  return sorted.map((node, index) => {
+    const col = index % columnsPerRow;
+    const row = Math.floor(index / columnsPerRow);
+    return {
+      id: node.id,
+      x: MINDMAP_PADDING_X + col * NODE_STEP_X,
+      y: MINDMAP_PADDING_Y + row * NODE_STEP_Y,
+    };
+  });
+}
+
+function arrangeAsTree(nodes, edges) {
+  const nodeIds = nodes.map((node) => node.id);
+  const children = new Map(nodeIds.map((id) => [id, []]));
+  const inDegree = new Map(nodeIds.map((id) => [id, 0]));
+
+  for (const edge of edges || []) {
+    const source = String(edge.source ?? "");
+    const target = String(edge.target ?? "");
+    if (!children.has(source) || !children.has(target) || source === target) {
+      continue;
+    }
+    children.get(source).push(target);
+    inDegree.set(target, (inDegree.get(target) || 0) + 1);
+  }
+
+  const roots = nodeIds.filter((id) => (inDegree.get(id) || 0) === 0);
+  if (!roots.length) roots.push(nodeIds[0]);
+
+  const levels = new Map();
+  const visited = new Set();
+  const queue = roots.map((id) => ({ id, level: 0 }));
+
+  while (queue.length) {
+    const { id, level } = queue.shift();
+    if (visited.has(id)) continue;
+    visited.add(id);
+    if (!levels.has(level)) levels.set(level, []);
+    levels.get(level).push(id);
+
+    for (const child of children.get(id) || []) {
+      if (!visited.has(child)) {
+        queue.push({ id: child, level: level + 1 });
+      }
+    }
+  }
+
+  for (const id of nodeIds) {
+    if (visited.has(id)) continue;
+    const detachedLevel = Math.max(-1, ...levels.keys()) + 1;
+    if (!levels.has(detachedLevel)) levels.set(detachedLevel, []);
+    levels.get(detachedLevel).push(id);
+  }
+
+  const maxRowWidth = Math.max(
+    ...[...levels.values()].map((row) => row.length),
+    1
+  );
+  const canvasCenterX =
+    MINDMAP_PADDING_X + (maxRowWidth * NODE_STEP_X) / 2;
+  const positions = new Map();
+
+  for (const [level, ids] of [...levels.entries()].sort((a, b) => a[0] - b[0])) {
+    const rowWidth = ids.length * NODE_STEP_X;
+    const startX = canvasCenterX - rowWidth / 2;
+    ids.forEach((id, index) => {
+      positions.set(id, {
+        x: Math.round(startX + index * NODE_STEP_X),
+        y: MINDMAP_PADDING_Y + level * NODE_STEP_Y,
+      });
+    });
+  }
+
+  return nodes.map((node) => ({
+    id: node.id,
+    x: positions.get(node.id)?.x ?? node.x,
+    y: positions.get(node.id)?.y ?? node.y,
+  }));
+}
+
+/** 관계가 있으면 트리 중심 정렬, 없으면 X좌표 기준 격자 정렬 */
+export function autoArrangeMindMapLayout(layout, cards) {
+  const normalized = ensureMindMapLayoutForCards(layout, cards, {
+    resolveCollisions: false,
+  });
+  const arranged =
+    normalized.edges.length > 0
+      ? arrangeAsTree(normalized.nodes, normalized.edges)
+      : arrangeBySortedColumns(normalized.nodes);
+
+  return {
+    engine: MINDMAP_ENGINE,
+    nodes: resolveNodeCollisions(arranged),
+    edges: normalized.edges,
+  };
+}
 
 /** 두 카드 위치에 맞는 연결 핸들(방향)을 자동 선택합니다. */
 export function pickHandlesForNodes(sourceNode, targetNode) {
@@ -151,7 +347,11 @@ function migrateGridLayoutToMindMap(gridLayout, cards) {
   };
 }
 
-export function ensureMindMapLayoutForCards(layout, cards) {
+export function ensureMindMapLayoutForCards(
+  layout,
+  cards,
+  { resolveCollisions = true } = {}
+) {
   if (!cards?.length) {
     return { engine: MINDMAP_ENGINE, nodes: [], edges: [] };
   }
@@ -208,9 +408,13 @@ export function ensureMindMapLayoutForCards(layout, cards) {
     })
     .filter(Boolean);
 
+  const resolvedNodes = resolveCollisions
+    ? resolveNodeCollisions(nodes)
+    : nodes;
+
   return {
     engine: MINDMAP_ENGINE,
-    nodes,
+    nodes: resolvedNodes,
     edges,
   };
 }
@@ -299,6 +503,20 @@ export function mindMapLayoutToFlowState(mindMapLayout, cards, cardProps) {
   });
 
   return { nodes, edges, layout };
+}
+
+export function applyLayoutPositionsToFlowNodes(flowNodes, layoutNodes) {
+  const posMap = new Map(
+    (layoutNodes || []).map((node) => [String(node.id), node])
+  );
+  return (flowNodes || []).map((node) => {
+    const next = posMap.get(String(node.id));
+    if (!next) return node;
+    return {
+      ...node,
+      position: { x: next.x, y: next.y },
+    };
+  });
 }
 
 export function flowStateToMindMapLayout(nodes, edges) {

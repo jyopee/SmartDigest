@@ -1,5 +1,15 @@
+import sys
+from pathlib import Path
+
+# Vercel entrypoint(backend.main:app) loads this module from the repo root.
+# Ensure sibling modules (database, summary_service, …) resolve like local uvicorn.
+_backend_dir = Path(__file__).resolve().parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
 import json
 import asyncio
+import os
 from typing import Any, Literal, Optional
 from contextlib import asynccontextmanager
 
@@ -41,14 +51,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SmartDigest API", version="1.0.0", lifespan=lifespan)
 
+_cors_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+_cors_origins.extend(
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
+_vercel_url = os.getenv("VERCEL_URL", "").strip()
+if _vercel_url:
+    _cors_origins.append(f"https://{_vercel_url}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

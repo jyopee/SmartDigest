@@ -1,35 +1,36 @@
 import { getQuotaStats } from "../api/usageService";
 import AccordionBox from "./AccordionBox";
 
-function QuotaProgressLine({ usedPercent, isLimitReached, thin = false }) {
+function QuotaProgressLine({ fillPercent, isLimitReached, thin = false }) {
+  const clamped = Math.min(100, Math.max(0, fillPercent));
   return (
     <div
       className={`quota-progress-bar${thin ? " quota-progress-bar--thin" : ""}${
         isLimitReached ? " exhausted" : ""
       }`}
       role="progressbar"
-      aria-valuenow={usedPercent}
+      aria-valuenow={clamped}
       aria-valuemin={0}
       aria-valuemax={100}
+      aria-label={`남은 호출 ${clamped}%`}
     >
       <div
         className="quota-progress-fill"
-        style={{ width: `${usedPercent}%` }}
+        style={{ width: `${clamped}%` }}
       />
     </div>
   );
 }
 
 export default function UsageAccordion({ usage }) {
-  if (!usage) return null;
-
+  const stats = getQuotaStats(usage ?? {});
   const {
     limit,
     usedCount,
     remaining,
-    percent: usedPercent,
+    remainingPercent,
     isLimitReached,
-  } = getQuotaStats(usage);
+  } = stats;
 
   const countLabel = (
     <span
@@ -56,7 +57,7 @@ export default function UsageAccordion({ usage }) {
       collapsedPreview={
         !isLimitReached ? (
           <QuotaProgressLine
-            usedPercent={usedPercent}
+            fillPercent={remainingPercent}
             isLimitReached={isLimitReached}
             thin
           />
@@ -71,7 +72,7 @@ export default function UsageAccordion({ usage }) {
             : `오늘 ${usedCount}회 사용 · 남은 ${remaining}회`}
         </p>
         <QuotaProgressLine
-          usedPercent={usedPercent}
+          fillPercent={remainingPercent}
           isLimitReached={isLimitReached}
         />
         {isLimitReached && (

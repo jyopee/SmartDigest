@@ -18,12 +18,21 @@ export function stripDecorativeMarkup(markdown) {
           !/^background(?:-color)?\s*:/i.test(rule) &&
           !/^border(?:-radius|-color)?\s*:/i.test(rule) &&
           !/^box-shadow\s*:/i.test(rule) &&
-          !/^padding\s*:/i.test(rule)
+          !/^padding\s*:/i.test(rule) &&
+          !/^text-align\s*:/i.test(rule) &&
+          !/^margin(?:-left|-right|-inline)?\s*:/i.test(rule) &&
+          !/^float\s*:/i.test(rule) &&
+          !/^position\s*:/i.test(rule)
       )
       .join("; ");
 
     return cleaned ? ` style=${quote}${cleaned}${quote}` : "";
   });
+
+  result = result.replace(
+    /\salign=(["']?)(?:left|center|right|justify)\1/gi,
+    ""
+  );
 
   return result;
 }

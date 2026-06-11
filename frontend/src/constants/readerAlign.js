@@ -22,9 +22,36 @@ export function saveReaderAlign(digestId, align) {
   localStorage.setItem(`smartdigest_reader_align_${digestId}`, align);
 }
 
-export function readerAlignClass(align) {
-  const value = Object.values(READER_ALIGN).includes(align)
+export function normalizeReaderAlign(align) {
+  return Object.values(READER_ALIGN).includes(align)
     ? align
     : READER_ALIGN.LEFT;
-  return `reader-prose--align-${value}`;
+}
+
+export function readerAlignClass(align) {
+  return `reader-prose--align-${normalizeReaderAlign(align)}`;
+}
+
+/** 정렬 상태를 className + 인라인 스타일로 즉시 반영 */
+export function readerAlignStyle(align, { blockPosition = true } = {}) {
+  const value = normalizeReaderAlign(align);
+  const style = {
+    "--reader-align": value,
+    textAlign: value,
+  };
+
+  if (blockPosition) {
+    if (value === READER_ALIGN.CENTER) {
+      style.marginLeft = "auto";
+      style.marginRight = "auto";
+    } else if (value === READER_ALIGN.RIGHT) {
+      style.marginLeft = "auto";
+      style.marginRight = "0";
+    } else {
+      style.marginLeft = "0";
+      style.marginRight = "auto";
+    }
+  }
+
+  return style;
 }

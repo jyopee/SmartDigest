@@ -23,13 +23,18 @@ import "@xyflow/react/dist/style.css";
 import SummaryCardNode from "./SummaryCardNode";
 import LabeledEdge from "./LabeledEdge";
 import {
+  applyLayoutPositionsToFlowNodes,
+  autoArrangeMindMapLayout,
   flowStateToMindMapLayout,
   mindMapLayoutToFlowState,
   pickHandlesForNodes,
+  resolveNodeCollisions,
 } from "../utils/mindMapLayoutEngine";
 
 const nodeTypes = { summaryCard: SummaryCardNode };
 const edgeTypes = { labeled: LabeledEdge };
+const LAYOUT_ANIMATION_MS = 320;
+const RESIZE_FIT_DEBOUNCE_MS = 140;
 
 function buildEdgeId(source, target) {
   return `edge-${source}-${target}`;
@@ -111,7 +116,14 @@ function getRelationGuide(connectMode, disconnectMode, pendingSourceId) {
   };
 }
 
-function withNodeUiState(nodes, cardProps, connectMode, pendingSourceId) {
+function withNodeUiState(
+  nodes,
+  cardProps,
+  connectMode,
+  pendingSourceId,
+  positionAnimating = false,
+  focusCardId = null
+) {
   return (nodes || []).map((node) => ({
     ...node,
     data: {
@@ -120,6 +132,8 @@ function withNodeUiState(nodes, cardProps, connectMode, pendingSourceId) {
       card: node.data?.card,
       connectMode,
       isConnectSource: pendingSourceId === node.id,
+      positionAnimating,
+      isDashboardFocus: focusCardId != null && node.id === String(focusCardId),
     },
   }));
 }
@@ -130,14 +144,18 @@ function MindMapFlow({
   cardProps,
   onLayoutChange,
   onPersistLayout,
-  onApplyDefaultLayout,
+  onApplyAutoLayout,
   searchActiveIndex,
   matchingCardIds,
   searchQuery,
   layoutRevision,
+  focusCardId = null,
 }) {
   const { fitView, setCenter } = useReactFlow();
   const persistTimerRef = useRef(null);
+  const animTimerRef = useRef(null);
+  const resizeTimerRef = useRef(null);
+  const wrapRef = useRef(null);
   const nodesRef = useRef([]);
   const edgesRef = useRef([]);
   const layoutRevisionRef = useRef(layoutRevision);
@@ -145,6 +163,7 @@ function MindMapFlow({
   const [connectMode, setConnectMode] = useState(false);
   const [disconnectMode, setDisconnectMode] = useState(false);
   const [pendingSourceId, setPendingSourceId] = useState(null);
+  const [layoutAnimating, setLayoutAnimating] = useState(false);
 
   const initialState = useMemo(
     () => mindMapLayoutToFlowState(mindMapLayout, cards, cardProps),
@@ -156,6 +175,14 @@ function MindMapFlow({
 
   nodesRef.current = nodes;
   edgesRef.current = edges;
+
+  const beginLayoutAnimation = useCallback(() => {
+    setLayoutAnimating(true);
+    if (animTimerRef.current) clearTimeout(animTimerRef.current);
+    animTimerRef.current = setTimeout(() => {
+      setLayoutAnimating(false);
+    }, LAYOUT_ANIMATION_MS);
+  }, []);
 
   const emitLayout = useCallback(
     (nextNodes, nextEdges) => {
@@ -169,6 +196,32 @@ function MindMapFlow({
       }, 500);
     },
     [cards.length, onLayoutChange, onPersistLayout]
+  );
+
+  const applyResolvedPositions = useCallback(
+    (flowNodes, layoutNodes, nextEdges = edgesRef.current) => {
+      const nextFlowNodes = withNodeUiState(
+        applyLayoutPositionsToFlowNodes(flowNodes, layoutNodes),
+        cardProps,
+        connectMode,
+        pendingSourceId,
+        true,
+        focusCardId
+      );
+      beginLayoutAnimation();
+      setNodes(nextFlowNodes);
+      emitLayout(nextFlowNodes, nextEdges);
+      return nextFlowNodes;
+    },
+    [
+      beginLayoutAnimation,
+      cardProps,
+      connectMode,
+      emitLayout,
+      pendingSourceId,
+      focusCardId,
+      setNodes,
+    ]
   );
 
   const handleEdgeRemove = useCallback(
@@ -269,6 +322,8 @@ function MindMapFlow({
   useEffect(
     () => () => {
       if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+      if (animTimerRef.current) clearTimeout(animTimerRef.current);
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
     },
     []
   );
@@ -279,7 +334,17 @@ function MindMapFlow({
     layoutRevisionRef.current = layoutRevision;
 
     const nextState = mindMapLayoutToFlowState(mindMapLayout, cards, cardProps);
-    setNodes(withNodeUiState(nextState.nodes, cardProps, connectMode, pendingSourceId));
+    beginLayoutAnimation();
+    setNodes(
+      withNodeUiState(
+        nextState.nodes,
+        cardProps,
+        connectMode,
+        pendingSourceId,
+        true,
+        focusCardId
+      )
+    );
     setEdges(enrichEdges(nextState.edges));
   }, [
     layoutRevision,
@@ -288,16 +353,25 @@ function MindMapFlow({
     cardProps,
     connectMode,
     pendingSourceId,
+    focusCardId,
     setNodes,
     setEdges,
     enrichEdges,
+    beginLayoutAnimation,
   ]);
 
   useEffect(() => {
     setNodes((currentNodes) =>
-      withNodeUiState(currentNodes, cardProps, connectMode, pendingSourceId)
+      withNodeUiState(
+        currentNodes,
+        cardProps,
+        connectMode,
+        pendingSourceId,
+        layoutAnimating,
+        focusCardId
+      )
     );
-  }, [cardProps, connectMode, pendingSourceId, setNodes]);
+  }, [cardProps, connectMode, pendingSourceId, layoutAnimating, focusCardId, setNodes]);
 
   useEffect(() => {
     if (!connectMode && !disconnectMode) return undefined;
@@ -316,10 +390,28 @@ function MindMapFlow({
   useEffect(() => {
     if (!nodes.length) return;
     const frame = requestAnimationFrame(() => {
-      fitView({ padding: 0.2, duration: 240 });
+      fitView({ padding: 0.18, duration: LAYOUT_ANIMATION_MS });
     });
     return () => cancelAnimationFrame(frame);
   }, [layoutRevision, nodes.length, fitView]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap || !nodes.length) return undefined;
+
+    const observer = new ResizeObserver(() => {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      resizeTimerRef.current = setTimeout(() => {
+        fitView({ padding: 0.18, duration: LAYOUT_ANIMATION_MS, maxZoom: 1.35 });
+      }, RESIZE_FIT_DEBOUNCE_MS);
+    });
+
+    observer.observe(wrap);
+    return () => {
+      observer.disconnect();
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    };
+  }, [fitView, nodes.length]);
 
   useEffect(() => {
     if (!searchQuery.trim() || !matchingCardIds.length) return;
@@ -333,9 +425,48 @@ function MindMapFlow({
     });
   }, [searchQuery, searchActiveIndex, matchingCardIds, nodes, setCenter]);
 
-  const handleNodeDragStop = useCallback(() => {
-    emitLayout(nodesRef.current, edgesRef.current);
-  }, [emitLayout]);
+  useEffect(() => {
+    if (!focusCardId || !nodes.length) return;
+    const targetNode = nodes.find((node) => node.id === String(focusCardId));
+    if (!targetNode) return;
+
+    const frame = requestAnimationFrame(() => {
+      setCenter(targetNode.position.x + 140, targetNode.position.y + 90, {
+        zoom: 1,
+        duration: 360,
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusCardId, nodes, layoutRevision, setCenter]);
+
+  const handleNodeDragStop = useCallback(
+    (_event, draggedNode) => {
+      const currentLayout = flowStateToMindMapLayout(
+        nodesRef.current,
+        edgesRef.current
+      );
+      const resolvedNodes = resolveNodeCollisions(
+        currentLayout.nodes,
+        draggedNode.id
+      );
+
+      const moved = resolvedNodes.some((node) => {
+        const original = currentLayout.nodes.find((item) => item.id === node.id);
+        return (
+          original &&
+          (original.x !== node.x || original.y !== node.y)
+        );
+      });
+
+      if (moved) {
+        applyResolvedPositions(nodesRef.current, resolvedNodes);
+        return;
+      }
+
+      emitLayout(nodesRef.current, edgesRef.current);
+    },
+    [applyResolvedPositions, emitLayout]
+  );
 
   const handleEdgesChange = useCallback(
     (changes) => {
@@ -406,14 +537,23 @@ function MindMapFlow({
     });
   }, []);
 
+  const handleAutoLayoutClick = useCallback(() => {
+    if (!onApplyAutoLayout) return;
+    const nextLayout = autoArrangeMindMapLayout(
+      flowStateToMindMapLayout(nodesRef.current, edgesRef.current),
+      cards
+    );
+    onApplyAutoLayout(nextLayout);
+  }, [cards, onApplyAutoLayout]);
+
   const guide = getRelationGuide(connectMode, disconnectMode, pendingSourceId);
 
   return (
-    <div className="mindmap-flow-wrap">
+    <div className="mindmap-flow-wrap" ref={wrapRef}>
       <ReactFlow
         className={`mindmap-flow${connectMode ? " is-connect-mode" : ""}${
           disconnectMode ? " is-disconnect-mode" : ""
-        }`}
+        }${layoutAnimating ? " is-layout-animating" : ""}`}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
@@ -424,8 +564,8 @@ function MindMapFlow({
         onNodeClick={handleNodeClick}
         onPaneClick={handlePaneClick}
         fitView
-        fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.25}
+        fitViewOptions={{ padding: 0.18 }}
+        minZoom={0.2}
         maxZoom={2}
         zoomOnScroll
         panOnScroll={false}
@@ -493,13 +633,13 @@ function MindMapFlow({
         <p className="mindmap-relation-guide">{guide.text}</p>
       </div>
 
-      {onApplyDefaultLayout && (
+      {onApplyAutoLayout && (
         <button
           type="button"
           className="mindmap-auto-layout-btn"
-          onClick={onApplyDefaultLayout}
+          onClick={handleAutoLayoutClick}
           onPointerDown={(event) => event.stopPropagation()}
-          title="카드를 격자 형태로 다시 배치합니다"
+          title="카드를 겹침 없이 자동 정렬합니다 (관계가 있으면 트리 구조)"
         >
           <AutoLayoutIcon />
           <span>자동 배치</span>
